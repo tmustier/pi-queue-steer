@@ -17,6 +17,12 @@ Install directly from GitHub:
 pi install git:github.com/tmustier/pi-queue-steer
 ```
 
+To pin the first release instead of tracking `main`:
+
+```bash
+pi install git:github.com/tmustier/pi-queue-steer@v0.1.0
+```
+
 Then start a new Pi session or run `/reload`.
 
 To try it for one session without installing:
