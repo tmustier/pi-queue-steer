@@ -9,9 +9,15 @@ Queue instructions while the agent works. Steering stays in a blue next-turn box
 
 Move into any row to edit it. The selected row becomes the live Pi editor, with its cursor, wrapping, paste handling, autocomplete and custom-editor behaviour intact.
 
-![Two steering messages and three follow-ups queued while Pi continues working](assets/pi-queue-steer-screenshot.png)
+## Demo
 
-[Watch the dual-lane demo](assets/pi-queue-steer-demo.mp4).
+![Looping demonstration of steering and follow-up queues while Pi continues working](assets/pi-queue-steer-demo.gif)
+
+[Watch the full-resolution dual-lane demo](assets/pi-queue-steer-demo.mp4).
+
+The complete queue remains visible while Pi works:
+
+![Two steering messages and three follow-ups queued while Pi continues working](assets/pi-queue-steer-screenshot.png)
 
 ## Install
 
