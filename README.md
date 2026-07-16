@@ -13,12 +13,6 @@ Move into any row to edit it. The selected row becomes the live Pi editor, with 
 
 ![Looping demonstration of steering and follow-up queues while Pi continues working](assets/pi-queue-steer-demo.gif)
 
-[Watch the full-resolution dual-lane demo](assets/pi-queue-steer-demo.mp4).
-
-The complete queue remains visible while Pi works:
-
-![Two steering messages and three follow-ups queued while Pi continues working](assets/pi-queue-steer-screenshot.png)
-
 ## Install
 
 Install the latest version from GitHub:
