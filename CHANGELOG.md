@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Show steering and follow-ups as separate lanes in one delivery-ordered timeline.
+- Keep steering rows editable until Pi's native turn boundary.
+- Preserve Pi's independent `one-at-a-time` and `all` modes for both lanes.
+- Add `Option+Down` navigation and recency-first `Option+Up` selection.
+- Pin edited heads so asynchronous delivery cannot consume a row under the cursor.
+- Stash unrelated composer text and remove empty text-only rows on save.
+- Pause both lanes after an abort and require an explicit empty `Enter` to resume.
+- Feed follow-ups into Pi's native continuation queue to preserve transcript and run semantics.
+
 ## 0.1.0 — 2026-07-16
 
 - Add a visible, session-local FIFO for queued Pi follow-ups.

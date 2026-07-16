@@ -3,21 +3,23 @@
 [![CI](https://github.com/tmustier/pi-queue-steer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmustier/pi-queue-steer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A Cursor-style visible follow-up queue for [Pi](https://github.com/earendil-works/pi-mono).
+A visible steering and follow-up timeline for [Pi](https://github.com/earendil-works/pi-mono).
 
-Queue prompts while the agent is working, see their FIFO order, and move directly into any row to edit it. The selected row becomes the live Pi editor: the cursor, wrapping, paste handling, autocomplete, and custom-editor behavior stay intact, but the editor's separate frame disappears so changing rows feels like moving focus rather than opening a new component.
+Queue instructions while the agent works. Steering rows stay above an ‘after this run’ boundary. Follow-ups stay below it. Both lanes remain independent first-in, first-out queues and keep Pi’s delivery timing.
 
-[Watch the 19-second demo](assets/pi-queue-steer-demo.mp4)
+Move into any row to edit it. The selected row becomes the live Pi editor, with its cursor, wrapping, paste handling, autocomplete and custom-editor behaviour intact.
+
+[Watch the v0.1.0 follow-up queue demo](assets/pi-queue-steer-demo.mp4). A two-lane demo will replace it before the next release.
 
 ## Install
 
-Install directly from GitHub:
+Install the latest version from GitHub:
 
 ```bash
 pi install git:github.com/tmustier/pi-queue-steer
 ```
 
-To pin the first release instead of tracking `main`:
+Pin the first release:
 
 ```bash
 pi install git:github.com/tmustier/pi-queue-steer@v0.1.0
@@ -25,45 +27,73 @@ pi install git:github.com/tmustier/pi-queue-steer@v0.1.0
 
 Then start a new Pi session or run `/reload`.
 
-To try it for one session without installing:
+Try a local checkout for one session:
 
 ```bash
-pi -e git:github.com/tmustier/pi-queue-steer
+pi -e ./index.ts
 ```
 
 ## Controls
 
-The extension follows your configured Pi action bindings. These are the defaults on macOS terminals:
+The extension follows your configured Pi action bindings. These are the default keys on macOS terminals:
 
 | Context | Key | Action |
 |---|---|---|
-| Agent working | `Enter` | Steer the current run through Pi's normal input path |
-| Agent working | `Option+Enter` | Add a visible follow-up to the FIFO |
-| Queue visible | `Option+Up` | Select the row nearest the composer, then move upward through the queue |
+| Agent working | `Enter` | Add visible steering for Pi’s next safe turn boundary |
+| Agent working | `Option+Enter` | Add a visible follow-up for after the run |
+| Queue visible | `Option+Up` | Select the most recently queued row |
+| Editing a row | `Option+Up` | Keep the current draft and move to the previous visual row |
+| Editing a row | `Option+Down` | Keep the current draft and move to the next visual row |
 | Editing a row | Type normally | Edit directly inside the selected row |
-| Editing a row | `Option+Up` | Keep the current draft and move the live editor to the previous row |
-| Editing a row | `Enter` or `Option+Enter` | Save all row edits in place |
-| Editing a row | `Escape` | Cancel the editing session and roll back all unsaved row edits |
-| Empty composer, queue visible | `Enter` | Send the oldest follow-up now |
+| Editing a row | `Enter` or `Option+Enter` | Save all row edits without changing their lanes |
+| Editing a row | `Escape` | Cancel the session and roll back all unsaved row edits |
+| Empty composer, follow-up queued | `Enter` | Promote the oldest follow-up to steering now |
+| Queue paused after an abort | `Enter` | Resume from the next steering row, or the next follow-up |
+| Agent working, queue visible | `Escape` | Abort the run and pause both visible lanes |
 
-On other terminals, `Option` may be labelled `Alt`.
+`Option+Down` is the only new fixed shortcut. The other controls use Pi’s configured action bindings. Terminals outside macOS may label `Option` as `Alt`.
 
-## Queue semantics
+## Delivery semantics
 
-- Follow-ups dispatch one at a time in FIFO order.
-- Editing never changes a row's position or delivery mode.
-- Cycling can edit several rows as one rollback-safe snapshot.
-- FIFO pauses only when the oldest row has an unsaved edit. Editing a later row does not block older work.
-- A failed send is restored at the front of the queue.
-- Text and image attachments stay together when a row is edited.
-- Queue state and edit drafts are session-local and are never written to the Pi transcript.
-- An unrelated composer draft is left untouched; clear or send it before entering queue-edit mode.
+The extension keeps Pi’s 2 delivery classes:
+
+- steering reaches the current run at Pi’s next safe turn boundary
+- follow-ups wait until the run finishes
+- steering remains ahead of follow-ups in the visible timeline
+- each lane keeps its own first-in, first-out order
+- Pi’s `one-at-a-time` and `all` settings apply independently to both lanes
+
+The extension hands messages back to Pi’s native queues only when their delivery boundary arrives. They remain visible and editable before that point. Pi records delivered rows as normal user messages.
+
+## Editing semantics
+
+- `Option+Up` starts at the row you queued most recently
+- `Option+Up` and `Option+Down` then move through the visible timeline
+- editing never changes a row’s position or delivery class
+- a selected row becomes the real editor without a nested composer frame
+- one editing session can hold drafts for several rows
+- `Escape` restores every row from the session snapshot
+- saving an empty text-only row removes it
+- image-only rows remain queued
+- an unrelated composer draft is stashed and restored when editing ends
+
+A touched head row is pinned until you save or cancel. In `one-at-a-time` mode, later rows do not block the head. In `all` mode, editing any row holds that whole lane so Pi receives a consistent batch.
+
+## Abort and recovery
+
+Aborting a run pauses both visible lanes. This prevents a follow-up from starting immediately after the abort.
+
+Press `Enter` on the empty composer to resume. A failed handoff returns the affected batch to the front of its lane.
+
+Queue state, pause state and edit drafts are session-local. They never enter the Pi transcript.
 
 ## Editor composition
 
-pi-queue-steer wraps the active Pi editor instead of replacing its input model. This keeps app keybindings and composes with custom editors such as raw-paste and pi-session-hud.
+pi-queue-steer wraps the active Pi editor. It does not replace Pi’s input model.
 
-For display, it extracts the live editor's content and cursor from the editor's own frame, then places that content inside the selected queue row. Autocomplete rows remain visible beneath the edited text.
+For display, it extracts the live editor’s text and cursor from the editor frame. It then places that content inside the selected queue row. Autocomplete remains below the edited text.
+
+The extension composes with custom editors including raw-paste and pi-session-hud.
 
 ## Development
 
@@ -73,16 +103,16 @@ npm run ci
 pi -e ./index.ts
 ```
 
-The automated suite covers queue ordering, stable edits, rollback, dispatch restoration, editor-frame extraction, and the inline row transition. TUI changes should also be checked in a real interactive Pi session.
+The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
 
 Tested with Pi 0.80.9.
 
 ## Security
 
-Pi extensions run with the same system permissions as Pi. Review extension source before installing any third-party package.
+Pi extensions run with the same system permissions as Pi. Review extension source before installing a third-party package.
 
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
 
-This project is inspired by Cursor's queue interaction and is not affiliated with Cursor or Anysphere.
+This project draws on Cursor’s queue interaction. It is not affiliated with Cursor or Anysphere.
