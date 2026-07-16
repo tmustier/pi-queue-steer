@@ -91,37 +91,60 @@ class QueueTimelineWidget implements Component {
 		const steering = this.items.filter((item) => item.lane === "steer");
 		const followUps = this.items.filter((item) => item.lane === "followUp");
 		if (width < 28) {
-			const summary = `queued S${steering.length} F${followUps.length}${this.paused ? " paused" : ""}`;
-			return [truncateToWidth(this.theme.fg("borderMuted", summary), width, "")];
+			const counts = [
+				this.theme.fg("accent", `S${steering.length}`),
+				this.theme.fg("warning", `F${followUps.length}`),
+			].join(" ");
+			const summary = `queued ${counts}${this.paused ? " paused" : ""}`;
+			return [truncateToWidth(summary, width, "")];
 		}
 
-		const border = (text: string) => this.theme.fg("borderMuted", text);
-		const counts = `${steering.length} steering · ${followUps.length} follow-up`;
-		const fullTitle = ` queued (${counts})${this.paused ? " · paused" : ""} `;
-		const shortTitle = ` queued S${steering.length} F${followUps.length}${this.paused ? " paused" : ""} `;
+		const lines: string[] = [];
+		if (steering.length > 0) this.renderLaneBox(lines, "steer", steering, width);
+		if (followUps.length > 0) this.renderLaneBox(lines, "followUp", followUps, width);
+		return lines;
+	}
+
+	private renderLaneBox(
+		lines: string[],
+		lane: QueueLane,
+		items: QueuedMessage<ImageContent>[],
+		width: number,
+	): void {
+		const color = laneColor(lane);
+		const border = (text: string) => this.theme.fg(color, text);
+		const laneTouched = items.some((item) => this.touchedIds.has(item.id));
+		const laneHeld = this.modes[lane] === "all"
+			? laneTouched
+			: !!items[0] && this.touchedIds.has(items[0].id);
+		const stage = lane === "steer" ? "next turn" : "after this run";
+		const state = this.paused ? "paused" : laneHeld ? "held while editing" : stage;
+		const name = lane === "steer" ? "steering queue" : "follow-ups";
+		const fullTitle = ` ${name} (${items.length}) · ${state} `;
+		const shortTitle = ` ${name} (${items.length}) `;
 		const title = visibleWidth(fullTitle) + 2 <= width ? fullTitle : shortTitle;
 		const topFill = "─".repeat(Math.max(0, width - visibleWidth(title) - 2));
-		const lines = [border(`┌${title}${topFill}┐`)];
+		lines.push(border(`┌${title}${topFill}┐`));
 		const cellWidth = width - 4;
 
-		for (const item of steering) this.renderItem(lines, item, steering, cellWidth, border);
-		if (steering.length > 0 && followUps.length > 0) {
-			lines.push(`${border("│")} ${fitCell(this.theme.fg("dim", "─ after this run ─"), cellWidth)} ${border("│")}`);
-		}
-		for (const item of followUps) this.renderItem(lines, item, followUps, cellWidth, border);
+		for (const item of items) this.renderItem(lines, item, items, cellWidth, border);
 
 		const dequeue = keyText("app.message.dequeue");
 		const followUp = keyText("app.message.followUp");
 		const submit = keyText("tui.input.submit");
 		const interrupt = keyText("app.interrupt");
+		const selectedHere = items.some((item) => item.id === this.editingId);
 		const help = this.editingId
-			? `${dequeue}/${nextRowKeyText()} move · ${submit}/${followUp} save · ${interrupt} cancel`
+			? selectedHere
+				? `${dequeue}/${nextRowKeyText()} move · ${submit}/${followUp} save · ${interrupt} cancel`
+				: `${dequeue}/${nextRowKeyText()} move here · ${interrupt} cancel`
 			: this.paused
 				? `${submit} resume · ${dequeue} edit · ${interrupt} keep paused`
-				: `${submit} steer/send next · ${followUp} follow-up · ${dequeue} edit`;
+				: lane === "steer"
+					? `${submit} steer/send next · ${dequeue} edit`
+					: `${followUp} add follow-up · ${submit} send next · ${dequeue} edit`;
 		lines.push(`${border("│")} ${fitCell(this.theme.fg("dim", help), cellWidth)} ${border("│")}`);
 		lines.push(border(`└${"─".repeat(width - 2)}┘`));
-		return lines;
 	}
 
 	private renderItem(
@@ -136,8 +159,6 @@ class QueueTimelineWidget implements Component {
 		const laneTouched = laneItems.some((candidate) => this.touchedIds.has(candidate.id));
 		const held = this.modes[item.lane] === "all" ? laneTouched : head && this.touchedIds.has(item.id);
 		const armed = this.modes[item.lane] === "all" || head;
-		const status = held ? " [held]" : this.paused && armed ? " [paused]" : "";
-		const label = `${laneLabel(item.lane)}${status}`;
 		const color = laneColor(item.lane);
 
 		if (!selected) {
@@ -148,13 +169,13 @@ class QueueTimelineWidget implements Component {
 					: armed
 						? "▶"
 						: "»";
-			const prefix = `${marker} ${label.padEnd(12)} `;
-			const raw = `${this.theme.fg(color, prefix)}${compactText(item)}`;
-			lines.push(`${border("│")} ${fitCell(raw, cellWidth)} ${border("│")}`);
+			const prefix = this.theme.fg(color, `${marker} `);
+			const body = this.theme.fg("muted", compactText(item));
+			lines.push(`${border("│")} ${fitCell(`${prefix}${body}`, cellWidth)} ${border("│")}`);
 			return;
 		}
 
-		const prefixText = `› ${label} `;
+		const prefixText = "› ";
 		const prefixWidth = visibleWidth(prefixText);
 		const editorWidth = Math.max(1, cellWidth - prefixWidth);
 		const editorLines = this.renderInlineEditor?.(editorWidth) ?? [item.text];
