@@ -27,6 +27,7 @@
     "LICENSE",
     "CHANGELOG.md",
     "assets/pi-queue-steer-demo.mp4",
+    "assets/pi-queue-steer-demo.gif",
     "assets/pi-queue-steer-screenshot.png"
   ],
   "scripts": {

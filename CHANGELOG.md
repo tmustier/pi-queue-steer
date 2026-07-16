@@ -4,7 +4,7 @@
 
 - Show steering and follow-ups as separate lanes in one delivery-ordered timeline.
 - Group the lanes into stacked blue and yellow boxes with aligned inline editing.
-- Refresh the demo in the original GitHub Dark terminal treatment and add a high-resolution queue screenshot.
+- Refresh the demo in the original GitHub Dark terminal treatment, remove its blank opening, and add a looping preview and high-resolution queue screenshot.
 - Keep steering rows editable until Pi's native turn boundary.
 - Honour Pi's independent `one-at-a-time` and `all` modes at active-run delivery boundaries.
 - Add `Option+Down` navigation and recency-first `Option+Up` selection.
