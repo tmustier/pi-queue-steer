@@ -228,17 +228,55 @@ function renderWidget(harness: ReturnType<typeof createHarness>, width = 76): st
 	return component.render(width).join("\n");
 }
 
-test("renders one timeline with steering before the after-this-run boundary", async () => {
+test("renders stacked lane boxes with steering above follow-ups", async () => {
 	const harness = createHarness();
 	await harness.emit("session_start");
 	await enqueue(harness, "followUp", "write the README");
 	await enqueue(harness, "steer", "check the API first");
 
 	const rendered = renderWidget(harness);
-	assert.ok(rendered.indexOf("check the API first") < rendered.indexOf("after this run"));
-	assert.ok(rendered.indexOf("after this run") < rendered.indexOf("write the README"));
-	assert.match(rendered, /steer/);
-	assert.match(rendered, /follow-up/);
+	const lines = rendered.split("\n");
+	assert.equal(lines.filter((line) => line.startsWith("┌")).length, 2);
+	assert.ok(rendered.indexOf("steering queue (1)") < rendered.indexOf("check the API first"));
+	assert.ok(rendered.indexOf("check the API first") < rendered.indexOf("follow-ups (1)"));
+	assert.ok(rendered.indexOf("follow-ups (1)") < rendered.indexOf("write the README"));
+	assert.match(rendered, /next turn/);
+	assert.match(rendered, /after this run/);
+});
+
+test("colors each lane's full box instead of only its row label", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "steer", "blue row");
+	await enqueue(harness, "followUp", "yellow row");
+	const calls: Array<[string, string]> = [];
+	const widgetFactory = harness.widget as (tui: unknown, theme: any) => { render(width: number): string[] };
+	const component = widgetFactory({}, {
+		fg(color: string, text: string): string {
+			calls.push([color, text]);
+			return text;
+		},
+	});
+
+	component.render(76);
+	assert.ok(calls.some(([color, text]) => color === "accent" && text.startsWith("┌ steering queue")));
+	assert.ok(calls.some(([color, text]) => color === "warning" && text.startsWith("┌ follow-ups")));
+	assert.ok(calls.some(([color, text]) => color === "muted" && text === "blue row"));
+	assert.ok(calls.some(([color, text]) => color === "muted" && text === "yellow row"));
+});
+
+test("keeps queued text aligned when its row becomes the live editor", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "followUp", "aligned message");
+
+	const queuedLine = renderWidget(harness).split("\n").find((line) => line.includes("aligned message"));
+	harness.editor.handleInput("alt-up");
+	const editingLine = renderWidget(harness).split("\n").find((line) => line.includes("aligned message"));
+
+	assert.ok(queuedLine);
+	assert.ok(editingLine);
+	assert.equal(queuedLine.indexOf("aligned message"), editingLine.indexOf("aligned message"));
 });
 
 test("uses compact queue chrome at narrow terminal widths", async () => {
@@ -319,7 +357,7 @@ test("Alt+Up enters at the most recently enqueued row across both lanes", async 
 
 	harness.editor.handleInput("alt-up");
 	assert.equal(harness.editor.getText(), "newest overall");
-	assert.match(renderWidget(harness), /› follow-up newest overall/);
+	assert.match(renderWidget(harness), /› newest overall/);
 });
 
 test("Alt+Up and Alt+Down navigate spatially while retaining row drafts", async () => {
@@ -384,7 +422,8 @@ test("editing a steering head pins it while editing a later row does not", async
 	held.editor.handleInput("alt-up");
 	await held.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
 	assert.equal(held.sent.length, 0);
-	assert.match(renderWidget(held), /steer \[held\] first/);
+	assert.match(renderWidget(held), /held while editing/);
+	assert.match(renderWidget(held), /› first/);
 
 	const later = createHarness();
 	await later.emit("session_start");

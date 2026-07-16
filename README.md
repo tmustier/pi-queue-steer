@@ -5,7 +5,7 @@
 
 A visible steering and follow-up timeline for [Pi](https://github.com/earendil-works/pi-mono).
 
-Queue instructions while the agent works. Steering rows stay above an ‘after this run’ boundary. Follow-ups stay below it. Both lanes remain independent first-in, first-out queues and keep Pi’s delivery timing.
+Queue instructions while the agent works. Steering stays in a blue next-turn box. Follow-ups stay in a yellow after-this-run box beneath it. Both lanes remain independent first-in, first-out queues and keep Pi’s delivery timing.
 
 Move into any row to edit it. The selected row becomes the live Pi editor, with its cursor, wrapping, paste handling, autocomplete and custom-editor behaviour intact.
 
@@ -59,7 +59,7 @@ The extension keeps Pi’s 2 delivery classes:
 
 - steering reaches the current run at Pi’s next safe turn boundary
 - follow-ups wait until the run finishes
-- steering remains ahead of follow-ups in the visible timeline
+- the blue steering box remains above the yellow follow-up box
 - each lane keeps its own first-in, first-out order
 - Pi’s `one-at-a-time` and `all` settings apply independently at active-run delivery boundaries
 

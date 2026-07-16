@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Show steering and follow-ups as separate lanes in one delivery-ordered timeline.
+- Group the lanes into stacked blue and yellow boxes with aligned inline editing.
 - Keep steering rows editable until Pi's native turn boundary.
 - Honour Pi's independent `one-at-a-time` and `all` modes at active-run delivery boundaries.
 - Add `Option+Down` navigation and recency-first `Option+Up` selection.
