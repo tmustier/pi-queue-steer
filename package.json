@@ -26,9 +26,7 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "assets/pi-queue-steer-demo.mp4",
-    "assets/pi-queue-steer-demo.gif",
-    "assets/pi-queue-steer-screenshot.png"
+    "assets/pi-queue-steer-demo.gif"
   ],
   "scripts": {
     "check": "tsc --noEmit",
@@ -38,8 +36,7 @@
   "pi": {
     "extensions": [
       "index.ts"
-    ],
-    "video": "https://raw.githubusercontent.com/tmustier/pi-queue-steer/main/assets/pi-queue-steer-demo.mp4"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
