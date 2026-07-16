@@ -9,7 +9,7 @@ Queue instructions while the agent works. Steering rows stay above an ‘after t
 
 Move into any row to edit it. The selected row becomes the live Pi editor, with its cursor, wrapping, paste handling, autocomplete and custom-editor behaviour intact.
 
-[Watch the v0.1.0 follow-up queue demo](assets/pi-queue-steer-demo.mp4). A two-lane demo will replace it before the next release.
+[Watch the dual-lane demo](assets/pi-queue-steer-demo.mp4).
 
 ## Install
 
