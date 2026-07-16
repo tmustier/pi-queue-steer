@@ -61,7 +61,7 @@ The extension keeps Pi’s 2 delivery classes:
 - follow-ups wait until the run finishes
 - steering remains ahead of follow-ups in the visible timeline
 - each lane keeps its own first-in, first-out order
-- Pi’s `one-at-a-time` and `all` settings apply independently to both lanes
+- Pi’s `one-at-a-time` and `all` settings apply independently at active-run delivery boundaries
 
 The extension hands messages back to Pi’s native queues only when their delivery boundary arrives. They remain visible and editable before that point. Pi records delivered rows as normal user messages.
 
@@ -77,7 +77,7 @@ The extension hands messages back to Pi’s native queues only when their delive
 - image-only rows remain queued
 - an unrelated composer draft is stashed and restored when editing ends
 
-A touched head row is pinned until you save or cancel. In `one-at-a-time` mode, later rows do not block the head. In `all` mode, editing any row holds that whole lane so Pi receives a consistent batch.
+A touched head row is pinned until you save or cancel. In `one-at-a-time` mode, later rows do not block the head. In `all` mode, editing any row holds that whole lane at active-run delivery boundaries.
 
 ## Abort and recovery
 
@@ -86,6 +86,10 @@ Aborting a run pauses both visible lanes. This prevents a follow-up from startin
 Press `Enter` on the empty composer to resume. A failed handoff returns the affected batch to the front of its lane.
 
 Queue state, pause state and edit drafts are session-local. They never enter the Pi transcript.
+
+## Proof limitation
+
+If an `all`-mode lane stays pinned until the agent settles, saving from idle restarts the run with that lane’s head. Pi receives the remaining rows at the next native boundary. Exact single-batch restart after this edge case remains open before release.
 
 ## Editor composition
 

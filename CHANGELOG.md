@@ -4,7 +4,7 @@
 
 - Show steering and follow-ups as separate lanes in one delivery-ordered timeline.
 - Keep steering rows editable until Pi's native turn boundary.
-- Preserve Pi's independent `one-at-a-time` and `all` modes for both lanes.
+- Honour Pi's independent `one-at-a-time` and `all` modes at active-run delivery boundaries.
 - Add `Option+Down` navigation and recency-first `Option+Up` selection.
 - Pin edited heads so asynchronous delivery cannot consume a row under the cursor.
 - Stash unrelated composer text and remove empty text-only rows on save.
