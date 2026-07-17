@@ -54,6 +54,17 @@ export class DeliveryQueue<TImage = unknown> {
 		return true;
 	}
 
+	/** Reclassify a row into the other lane, joining that lane's tail. */
+	moveToLaneTail(id: string, lane: QueueLane): boolean {
+		const index = this.items.findIndex((item) => item.id === id);
+		if (index === -1) return false;
+		const [item] = this.items.splice(index, 1);
+		if (!item) return false;
+		item.lane = lane;
+		this.items.push(item);
+		return true;
+	}
+
 	remove(id: string): QueuedMessage<TImage> | undefined {
 		const index = this.items.findIndex((item) => item.id === id);
 		if (index === -1) return undefined;
@@ -139,11 +150,14 @@ interface QueuedMessageDraft<TImage> {
 	id: string;
 	text: string;
 	images: TImage[];
+	lane: QueueLane;
+	removed: boolean;
 }
 
 export interface EditCommitResult {
 	updated: number;
 	removed: number;
+	moved: number;
 }
 
 /** Rollback-safe drafts spanning rows from either delivery lane. */
@@ -155,7 +169,11 @@ export class QueueEditSession<TImage = unknown> {
 	constructor(item: QueuedMessage<TImage>, composerDraft: string) {
 		this.currentId = item.id;
 		this.composerDraft = composerDraft;
-		this.drafts.set(item.id, { id: item.id, text: item.text, images: [...item.images] });
+		this.drafts.set(item.id, this.newDraft(item));
+	}
+
+	private newDraft(item: QueuedMessage<TImage>): QueuedMessageDraft<TImage> {
+		return { id: item.id, text: item.text, images: [...item.images], lane: item.lane, removed: false };
 	}
 
 	get selectedId(): string {
@@ -176,10 +194,34 @@ export class QueueEditSession<TImage = unknown> {
 	select(item: QueuedMessage<TImage>, currentText: string, images?: readonly TImage[]): string {
 		this.capture(currentText, images);
 		if (!this.drafts.has(item.id)) {
-			this.drafts.set(item.id, { id: item.id, text: item.text, images: [...item.images] });
+			this.drafts.set(item.id, this.newDraft(item));
 		}
 		this.currentId = item.id;
 		return this.selectedText;
+	}
+
+	/** Toggle whether the row is deleted on save. Returns the new mark. */
+	toggleRemoved(id: string): boolean | undefined {
+		const draft = this.drafts.get(id);
+		if (!draft) return undefined;
+		draft.removed = !draft.removed;
+		return draft.removed;
+	}
+
+	/** Toggle the row's draft delivery lane. Returns the new lane. */
+	toggleLane(id: string): QueueLane | undefined {
+		const draft = this.drafts.get(id);
+		if (!draft) return undefined;
+		draft.lane = draft.lane === "steer" ? "followUp" : "steer";
+		return draft.lane;
+	}
+
+	laneFor(id: string): QueueLane | undefined {
+		return this.drafts.get(id)?.lane;
+	}
+
+	isRemoved(id: string): boolean {
+		return this.drafts.get(id)?.removed ?? false;
 	}
 
 	touches(id: string): boolean {
@@ -207,13 +249,22 @@ export class QueueEditSession<TImage = unknown> {
 		this.capture(currentText, images);
 		let updated = 0;
 		let removed = 0;
+		let moved = 0;
 		for (const draft of this.drafts.values()) {
-			if (!draft.text.trim() && draft.images.length === 0) {
+			if (draft.removed || (!draft.text.trim() && draft.images.length === 0)) {
 				if (queue.remove(draft.id)) removed += 1;
 				continue;
 			}
 			if (queue.update(draft.id, draft.text, draft.images)) updated += 1;
 		}
-		return { updated, removed };
+		// Apply lane moves in queue order so multi-row moves land at the
+		// destination tail in the same order the timeline previewed them.
+		for (const item of queue.snapshot()) {
+			const draft = this.drafts.get(item.id);
+			if (draft && !draft.removed && draft.lane !== item.lane) {
+				if (queue.moveToLaneTail(item.id, draft.lane)) moved += 1;
+			}
+		}
+		return { updated, removed, moved };
 	}
 }

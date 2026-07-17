@@ -81,10 +81,55 @@ test("empty drafts remove text-only rows but preserve image-only rows", () => {
 	const imageOnly = queue.enqueue("followUp", "", ["image.png"]);
 
 	const deleteEdit = new QueueEditSession(textOnly, "");
-	assert.deepEqual(deleteEdit.commit(queue, ""), { updated: 0, removed: 1 });
+	assert.deepEqual(deleteEdit.commit(queue, ""), { updated: 0, removed: 1, moved: 0 });
 	const imageEdit = new QueueEditSession(imageOnly, "");
-	assert.deepEqual(imageEdit.commit(queue, ""), { updated: 1, removed: 0 });
+	assert.deepEqual(imageEdit.commit(queue, ""), { updated: 1, removed: 0, moved: 0 });
 	assert.deepEqual(queue.get(imageOnly.id)?.images, ["image.png"]);
+});
+
+test("removal marks delete any row on commit, including image-only rows", () => {
+	const queue = new DeliveryQueue<string>();
+	const imageOnly = queue.enqueue("followUp", "", ["image.png"]);
+	queue.enqueue("followUp", "keep me");
+
+	const edit = new QueueEditSession(imageOnly, "");
+	assert.equal(edit.toggleRemoved(imageOnly.id), true);
+	assert.equal(edit.toggleRemoved(imageOnly.id), false);
+	assert.equal(edit.toggleRemoved(imageOnly.id), true);
+	assert.deepEqual(edit.commit(queue, ""), { updated: 0, removed: 1, moved: 0 });
+	assert.deepEqual(queue.laneSnapshot("followUp").map((item) => item.text), ["keep me"]);
+});
+
+test("lane toggles re-lane rows to the destination tail on commit only", () => {
+	const queue = new DeliveryQueue();
+	const promote = queue.enqueue("followUp", "promote me");
+	queue.enqueue("steer", "steer one");
+	queue.enqueue("steer", "steer two");
+
+	const edit = new QueueEditSession(promote, "");
+	assert.equal(edit.toggleLane(promote.id), "steer");
+	assert.equal(edit.laneFor(promote.id), "steer");
+	assert.equal(queue.get(promote.id)?.lane, "followUp");
+
+	assert.deepEqual(edit.commit(queue, "promote me"), { updated: 1, removed: 0, moved: 1 });
+	assert.deepEqual(
+		queue.laneSnapshot("steer").map((item) => item.text),
+		["steer one", "steer two", "promote me"],
+	);
+	assert.equal(queue.get(promote.id)?.id, promote.id);
+	assert.equal(queue.laneLength("followUp"), 0);
+});
+
+test("toggling a lane twice leaves the row untouched at commit", () => {
+	const queue = new DeliveryQueue();
+	const first = queue.enqueue("steer", "first");
+	queue.enqueue("steer", "second");
+
+	const edit = new QueueEditSession(first, "");
+	edit.toggleLane(first.id);
+	edit.toggleLane(first.id);
+	assert.deepEqual(edit.commit(queue, "first"), { updated: 1, removed: 0, moved: 0 });
+	assert.deepEqual(queue.laneSnapshot("steer").map((item) => item.text), ["first", "second"]);
 });
 
 class MockEditor {
@@ -484,7 +529,102 @@ test("clearing a selected text-only row deletes it on save", async () => {
 	harness.editor.setText("");
 	harness.editor.handleInput("enter");
 	assert.equal(harness.widget, undefined);
-	assert.match(harness.notifications[0]?.message ?? "", /Removed 1 empty queued message/);
+	assert.match(harness.notifications[0]?.message ?? "", /Removed 1 queued message/);
+});
+
+test("Alt+X marks the selected row and save removes it", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "steer", "keep me");
+	await enqueue(harness, "steer", "cancel me");
+
+	harness.editor.handleInput("alt-up");
+	harness.editor.handleInput("\x1bx");
+	assert.match(renderWidget(harness), /removed on save/);
+
+	harness.editor.handleInput("enter");
+	assert.match(harness.notifications[0]?.message ?? "", /Removed 1 queued message/);
+	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+	assert.deepEqual(harness.sent[0], { content: "keep me", options: { deliverAs: "steer" } });
+	assert.equal(harness.widget, undefined);
+});
+
+test("Escape rolls back a removal mark with the rest of the session", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "steer", "nearly gone");
+
+	harness.editor.handleInput("alt-up");
+	harness.editor.handleInput("\x1bx");
+	harness.editor.handleInput("escape");
+	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+	assert.deepEqual(harness.sent[0], { content: "nearly gone", options: { deliverAs: "steer" } });
+});
+
+test("a removal-marked head stays pinned at delivery boundaries", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "steer", "marked head");
+
+	harness.editor.handleInput("alt-up");
+	harness.editor.handleInput("\x1bx");
+	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+	assert.equal(harness.sent.length, 0);
+	assert.match(renderWidget(harness), /held while editing/);
+});
+
+test("Alt+T previews a follow-up in the steering box and re-lanes on save", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "steer", "steer one");
+	await enqueue(harness, "followUp", "promote me");
+
+	harness.editor.handleInput("alt-up");
+	harness.editor.handleInput("\x1bt");
+	const preview = renderWidget(harness);
+	assert.match(preview, /steering queue \(2\)/);
+	assert.match(preview, /moves here on save/);
+	assert.ok(preview.indexOf("steer one") < preview.indexOf("promote me"));
+
+	harness.editor.handleInput("enter");
+	assert.match(harness.notifications[0]?.message ?? "", /Moved 1 queued message to the other lane/);
+	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+	assert.deepEqual(harness.sent.map((item) => [item.content, item.options]), [
+		["steer one", { deliverAs: "steer" }],
+		["promote me", { deliverAs: "steer" }],
+	]);
+});
+
+test("Escape rolls back a lane toggle with the rest of the session", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "followUp", "stay a follow-up");
+
+	harness.editor.handleInput("alt-up");
+	harness.editor.handleInput("\x1bt");
+	harness.editor.handleInput("escape");
+	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+	assert.equal(harness.sent.length, 0);
+	await harness.emit("agent_end");
+	assert.deepEqual(harness.sent[0], { content: "stay a follow-up", options: { deliverAs: "followUp" } });
+});
+
+test("navigation follows the visual timeline while a lane draft is active", async () => {
+	const harness = createHarness();
+	await harness.emit("session_start");
+	await enqueue(harness, "steer", "steer one");
+	await enqueue(harness, "followUp", "later one");
+	await enqueue(harness, "followUp", "later two");
+
+	harness.editor.handleInput("alt-up");
+	assert.equal(harness.editor.getText(), "later two");
+	harness.editor.handleInput("\x1bt");
+	// Now previewed at the steering tail: previous is the native steer row.
+	harness.editor.handleInput("alt-up");
+	assert.equal(harness.editor.getText(), "steer one");
+	harness.editor.handleInput("\x1b[1;3B");
+	assert.equal(harness.editor.getText(), "later two");
 });
 
 test("recomposes after another extension installs editor chrome on a later tick", async () => {
