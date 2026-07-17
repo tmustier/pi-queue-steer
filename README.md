@@ -47,13 +47,15 @@ The extension follows your configured Pi action bindings. These are the default 
 | Editing a row | `Option+Up` | Keep the current draft and move to the previous visual row |
 | Editing a row | `Option+Down` | Keep the current draft and move to the next visual row |
 | Editing a row | Type normally | Edit directly inside the selected row |
+| Editing a row | `Option+X` | Mark the selected row for removal; save deletes it, a second press restores it |
+| Editing a row | `Option+T` | Move the selected row to the other lane when saved |
 | Editing a row | `Enter` or `Option+Enter` | Save all row edits without changing their lanes |
 | Editing a row | `Escape` | Cancel the session and roll back all unsaved row edits |
 | Empty composer, follow-up queued | `Enter` | Promote the oldest follow-up to steering now |
 | Queue paused after an abort | `Enter` | Resume from the next steering row, or the next follow-up |
 | Agent working, queue visible | `Escape` | Abort the run and pause both visible lanes |
 
-`Option+Down` is the only new fixed shortcut. The other controls use Pi’s configured action bindings. Terminals outside macOS may label `Option` as `Alt`.
+`Option+Down`, `Option+X` and `Option+T` are the only new fixed shortcuts. The other controls use Pi’s configured action bindings. Terminals outside macOS may label `Option` as `Alt`.
 
 ## Delivery semantics
 
@@ -71,12 +73,14 @@ The extension hands messages back to Pi’s native queues only when their delive
 
 - `Option+Up` starts at the row you queued most recently
 - `Option+Up` and `Option+Down` then move through the visible timeline
-- editing never changes a row’s position or delivery class
+- saving never changes a row’s lane implicitly; `Option+T` re-lanes the selected row explicitly, and it joins the tail of its new lane on save
+- a re-laned row previews inside its destination box before the save commits it
+- `Option+X` marks the selected row for removal; save deletes it, and `Escape` or a second `Option+X` restores it
 - a selected row becomes the real editor without a nested composer frame
 - one editing session can hold drafts for several rows
-- `Escape` restores every row from the session snapshot
+- `Escape` restores every row from the session snapshot, including removal marks and lane toggles
 - saving an empty text-only row removes it
-- image-only rows remain queued
+- image-only rows survive text clearing; `Option+X` removes them
 - an unrelated composer draft is stashed and restored when editing ends
 
 A touched head row is pinned until you save or cancel. In `one-at-a-time` mode, later rows do not block the head. In `all` mode, editing any row holds that whole lane at active-run delivery boundaries.
@@ -109,7 +113,7 @@ npm run ci
 pi -e ./index.ts
 ```
 
-The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
+The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, removal marks, lane toggles, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
 
 Tested with Pi 0.80.9.
 

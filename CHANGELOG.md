@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `Option+X` to mark the selected row for removal — deleted on save, restored by `Escape` or a second press, and finally covering image-only rows.
+- Add `Option+T` to re-lane the selected row between steering and follow-up, previewing at its destination tail before the save commits it.
+- Navigate row selection through the visual timeline so lane previews and `Option+Up`/`Option+Down` movement stay aligned.
+
 - Show steering and follow-ups as separate lanes in one delivery-ordered timeline.
 - Group the lanes into stacked blue and yellow boxes with aligned inline editing.
 - Add a compact looping demo in the original GitHub Dark terminal treatment, starting on a populated screen.
