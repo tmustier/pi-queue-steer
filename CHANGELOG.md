@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Add command rows: `/compact [instructions]` and `/reload` queue in FIFO position and execute only once the agent is idle, so rows behind them wait — e.g. a queued `continue` delivers after compaction completes.
-- Block mid-run `Enter` on a command with a follow-up hint instead of Pi's built-in dispatch, which aborts the active run.
+- Queue a mid-run `Enter` on `/reload` instead of surfacing Pi's built-in "wait until the agent finishes" warning; mid-run `Enter` on `/compact` keeps Pi's built-in behaviour.
 - Restore rows queued behind a `/reload` after the runtime swap.
 - Execute idle `Option+Enter` command submissions instead of letting them reach the LLM as text.
 

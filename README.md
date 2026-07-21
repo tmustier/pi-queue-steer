@@ -76,7 +76,7 @@ Rows whose text is exactly `/compact`, `/compact <instructions>` or `/reload` ar
 - `Option+Enter` while the agent works queues the command in follow-up order
 - a command row executes only once the agent is idle; rows behind it wait — so `/compact` followed by `continue` compacts first and delivers `continue` after compaction completes
 - `/reload` runs Pi’s built-in reload; rows queued behind it are restored after the runtime swap
-- `Enter` on a command while the agent works shows a hint instead of Pi’s built-in dispatch, which would abort the active run
+- `Enter` on `/reload` while the agent works queues it too, replacing Pi’s built-in “wait until the agent finishes” warning; `Enter` on `/compact` keeps Pi’s built-in immediate behaviour
 - `Option+Enter` on a command while the agent is idle executes it immediately instead of sending the text to the model
 - command rows show a `⚙` marker and pause, resume and edit like any other row; editing a row into or out of command form just works
 

@@ -659,10 +659,11 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 	};
 
 	/**
-	 * Guard the semantic submit point against built-in command dispatch while the
-	 * agent is busy: Pi's own submit handler runs built-in /compact immediately,
-	 * aborting the active run. Wrapping onSubmit (after autocomplete resolution)
-	 * is the only interception point that reliably sees the final submitted text.
+	 * Wrap the semantic submit point (after autocomplete resolution) so a mid-run
+	 * Enter on /reload queues it instead of hitting Pi's built-in "wait until the
+	 * agent finishes" warning. Everything else, including mid-run /compact,
+	 * passes through to Pi's own dispatch unchanged. The wrap also captures Pi's
+	 * submit handler for the queued-/reload replay.
 	 */
 	const installSubmitGuard = (editor: EditorComponent, ctx: ExtensionContext): void => {
 		const guarded = editor as EditorComponent & { [SUBMIT_GUARD]?: boolean };
@@ -672,12 +673,10 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		if (innerSubmit) tuiSubmit = innerSubmit;
 		const wrappedSubmit = (text: string) => {
 			const command = parseQueuedCommand(text);
-			if (command && !editSession && (commandRunning || !ctx.isIdle())) {
-				ctx.ui.notify(
-					`Agent is busy — ${keyText("app.message.followUp")} queues /${command.kind} to run in follow-up order`,
-					"info",
-				);
-				setTimeout(() => ctx.ui.setEditorText(text), 0);
+			if (command?.kind === "reload" && !editSession && (commandRunning || !ctx.isIdle())) {
+				queue.enqueue("followUp", text, []);
+				paused = false;
+				renderQueue(ctx);
 				return;
 			}
 			innerSubmit?.(text);
