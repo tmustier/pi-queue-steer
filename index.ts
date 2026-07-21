@@ -8,11 +8,13 @@ import {
 	type Theme,
 	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, type Component, type EditorComponent } from "@earendil-works/pi-tui";
 import { extractInlineEditorLines } from "./editor-render.ts";
 import {
 	DeliveryQueue,
+	parseQueuedCommand,
 	QueueEditSession,
+	type QueuedCommand,
 	type QueuedMessage,
 	type QueueLane,
 } from "./queue-state.ts";
@@ -21,6 +23,20 @@ const WIDGET_ID = "queue-steer.timeline";
 const EDITOR_FEATURES = Symbol.for("@tmustier/pi-editor-features");
 const QUEUE_STEER_FEATURE = "queue-steer";
 const NEXT_ROW_KEY = "alt+down";
+const RELOAD_STASH_KEY = "@tmustier/pi-queue-steer.reload-stash";
+const SUBMIT_GUARD = Symbol.for("@tmustier/pi-queue-steer.submit-guard");
+
+/** Rows surviving a queued /reload, parked on globalThis across the runtime swap. */
+interface ReloadStashRow {
+	lane: QueueLane;
+	text: string;
+	images: ImageContent[];
+}
+interface ReloadStash {
+	at: number;
+	rows: ReloadStashRow[];
+}
+const globalStore = globalThis as unknown as Record<string, unknown>;
 const REMOVE_ROW_KEY = "alt+x";
 const TOGGLE_LANE_KEY = "alt+t";
 
@@ -67,6 +83,7 @@ interface TimelineItem extends QueuedMessage<ImageContent> {
 	removed: boolean;
 	movedLane: boolean;
 	held: boolean;
+	command: QueuedCommand | undefined;
 }
 
 class QueueTimelineWidget implements Component {
@@ -171,15 +188,18 @@ class QueueTimelineWidget implements Component {
 			}
 			const marker = item.held || (this.paused && armed)
 				? "⏸"
-				: item.lane === "followUp"
-					? "○"
-					: armed
-						? "▶"
-						: "»";
+				: item.command
+					? "⚙"
+					: item.lane === "followUp"
+						? "○"
+						: armed
+							? "▶"
+							: "»";
 			const prefix = this.theme.fg(color, `${marker} `);
 			const moved = item.movedLane ? this.theme.fg("dim", " · moves here on save") : "";
+			const commandNote = item.command && !item.movedLane ? this.theme.fg("dim", " · runs when idle") : "";
 			const body = this.theme.fg("muted", compactText(item));
-			lines.push(`${border("│")} ${fitCell(`${prefix}${body}${moved}`, cellWidth)} ${border("│")}`);
+			lines.push(`${border("│")} ${fitCell(`${prefix}${body}${commandNote}${moved}`, cellWidth)} ${border("│")}`);
 			return;
 		}
 
@@ -194,6 +214,7 @@ class QueueTimelineWidget implements Component {
 		const notes: string[] = [];
 		if (item.removed) notes.push(`removed on save · ${REMOVE_ROW_KEY} undoes`);
 		else if (item.movedLane) notes.push(`moves here on save · ${TOGGLE_LANE_KEY} undoes`);
+		if (item.command && !item.removed) notes.push(`command row · runs when idle`);
 		if (item.images.length > 0) {
 			notes.push(`${item.images.length} image${item.images.length === 1 ? "" : "s"} preserved`);
 		}
@@ -219,6 +240,12 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 	let renderingInline = false;
 	let paused = false;
 	let settingsManager: SettingsManager | undefined;
+	// True while a queued /compact (or a just-dispatched /reload) is executing;
+	// suspends all lane dispatch until the command completes.
+	let commandRunning = false;
+	// Pi's own editor submit handler, captured by the submit guard. Replaying text
+	// through it is the only public route to the built-in /reload.
+	let tuiSubmit: ((text: string) => void) | undefined;
 
 	const queueModes = (): QueueModes => ({
 		steer: settingsManager?.getSteeringMode() ?? "one-at-a-time",
@@ -253,14 +280,16 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		};
 		const decorated = queue.snapshot().map((item): TimelineItem => {
 			const lane = editSession?.laneFor(item.id) ?? item.lane;
+			const text = editSession?.textFor(item.id) ?? item.text;
 			return {
 				...item,
-				text: editSession?.textFor(item.id) ?? item.text,
+				text,
 				images: editSession?.imagesFor(item.id) ?? item.images,
 				lane,
 				removed: editSession?.isRemoved(item.id) ?? false,
 				movedLane: lane !== item.lane,
 				held: heldLane[item.lane] && (modes[item.lane] === "all" || heads[item.lane] === item.id),
+				command: parseQueuedCommand(text),
 			};
 		});
 		return [
@@ -293,9 +322,15 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		);
 	};
 
+	// Message rows only; command rows never dispatch at active-run boundaries.
+	// A command row at the lane head holds everything behind it (FIFO) until the
+	// agent settles and dispatchFromIdle executes it.
 	const takeLaneBatch = (lane: QueueLane): QueuedMessage<ImageContent>[] => {
-		if (paused || queue.laneLength(lane) === 0 || laneIsHeld(lane)) return [];
-		if (queueModes()[lane] === "all") return queue.shiftAll(lane);
+		if (paused || commandRunning || queue.laneLength(lane) === 0 || laneIsHeld(lane)) return [];
+		const isMessage = (item: QueuedMessage<ImageContent>) => parseQueuedCommand(item.text) === undefined;
+		if (queueModes()[lane] === "all") return queue.shiftWhile(lane, isMessage);
+		const head = queue.peek(lane);
+		if (!head || !isMessage(head)) return [];
 		const item = queue.shift(lane);
 		return item ? [item] : [];
 	};
@@ -342,8 +377,61 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		return deliverBatchToNativeQueue(ctx, lane, items);
 	};
 
+	// Execute the command row at the lane head. Only called when the agent is idle.
+	const executeCommandRow = (ctx: ExtensionContext, lane: QueueLane): boolean => {
+		const next = queue.shift(lane);
+		if (!next) return false;
+		const command = parseQueuedCommand(next.text);
+		if (!command) {
+			queue.prepend(next);
+			return false;
+		}
+		paused = false;
+		renderQueue(ctx);
+		if (command.kind === "compact") {
+			commandRunning = true;
+			ctx.ui.notify(`Running queued /compact${command.instructions ? ` (${command.instructions})` : ""}`, "info");
+			const resume = () => {
+				commandRunning = false;
+				const current = activeContext ?? ctx;
+				renderQueue(current);
+				if (!paused && !editSession && queue.length > 0 && current.isIdle()) dispatchFromIdle(current);
+			};
+			ctx.compact({
+				customInstructions: command.instructions,
+				onComplete: resume,
+				onError: (error) => {
+					(activeContext ?? ctx).ui.notify(`Queued /compact failed: ${error.message}`, "error");
+					resume();
+				},
+			});
+			return true;
+		}
+		const submit = tuiSubmit;
+		if (!submit) {
+			ctx.ui.notify("Queued /reload dropped: no interactive editor to run it through", "error");
+			renderQueue(ctx);
+			return false;
+		}
+		if (queue.length > 0) {
+			const stash: ReloadStash = {
+				at: Date.now(),
+				rows: queue.snapshot().map((item) => ({ lane: item.lane, text: item.text, images: item.images })),
+			};
+			globalStore[RELOAD_STASH_KEY] = stash;
+		}
+		commandRunning = true;
+		// Defer so the extension runtime is never torn down from inside this handler.
+		setTimeout(() => submit("/reload"), 0);
+		return true;
+	};
+
 	const dispatchFromIdle = (ctx: ExtensionContext): boolean => {
 		activeContext = ctx;
+		if (commandRunning) {
+			renderQueue(ctx);
+			return false;
+		}
 		const lane: QueueLane | undefined = queue.laneLength("steer") > 0
 			? "steer"
 			: queue.laneLength("followUp") > 0
@@ -353,6 +441,8 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			renderQueue(ctx);
 			return false;
 		}
+		const head = queue.peek(lane);
+		if (head && parseQueuedCommand(head.text)) return executeCommandRow(ctx, lane);
 		const next = queue.shift(lane);
 		if (!next) return false;
 		paused = false;
@@ -372,6 +462,16 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 	};
 
 	const sendFollowUpNow = (ctx: ExtensionContext): boolean => {
+		const head = queue.peek("followUp");
+		if (!head) return false;
+		const headCommand = parseQueuedCommand(head.text);
+		if (headCommand) {
+			if (commandRunning || !ctx.isIdle()) {
+				ctx.ui.notify(`Queued /${headCommand.kind} runs when the agent is idle`, "info");
+				return false;
+			}
+			return executeCommandRow(ctx, "followUp");
+		}
 		const next = queue.shift("followUp");
 		if (!next) return false;
 		renderQueue(ctx);
@@ -460,6 +560,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 
 		const factory = ((tui, theme, keybindings) => {
 			const editor = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+			installSubmitGuard(editor, ctx);
 			const handleInput = editor.handleInput.bind(editor);
 			const renderEditor = editor.render.bind(editor);
 			const isShowingAutocomplete = (): boolean => {
@@ -557,6 +658,41 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		renderQueue(ctx);
 	};
 
+	/**
+	 * Guard the semantic submit point against built-in command dispatch while the
+	 * agent is busy: Pi's own submit handler runs built-in /compact immediately,
+	 * aborting the active run. Wrapping onSubmit (after autocomplete resolution)
+	 * is the only interception point that reliably sees the final submitted text.
+	 */
+	const installSubmitGuard = (editor: EditorComponent, ctx: ExtensionContext): void => {
+		const guarded = editor as EditorComponent & { [SUBMIT_GUARD]?: boolean };
+		if (guarded[SUBMIT_GUARD]) return;
+		guarded[SUBMIT_GUARD] = true;
+		let innerSubmit = editor.onSubmit;
+		if (innerSubmit) tuiSubmit = innerSubmit;
+		const wrappedSubmit = (text: string) => {
+			const command = parseQueuedCommand(text);
+			if (command && !editSession && (commandRunning || !ctx.isIdle())) {
+				ctx.ui.notify(
+					`Agent is busy — ${keyText("app.message.followUp")} queues /${command.kind} to run in follow-up order`,
+					"info",
+				);
+				setTimeout(() => ctx.ui.setEditorText(text), 0);
+				return;
+			}
+			innerSubmit?.(text);
+		};
+		Object.defineProperty(editor, "onSubmit", {
+			configurable: true,
+			enumerable: true,
+			get: () => wrappedSubmit,
+			set: (fn: ((text: string) => void) | undefined) => {
+				innerSubmit = fn;
+				if (fn) tuiSubmit = fn;
+			},
+		});
+	};
+
 	const scheduleEditorInstall = (ctx: ExtensionContext): void => {
 		if (editorInstallTimer) clearTimeout(editorInstallTimer);
 		editorInstallTimer = setTimeout(() => {
@@ -565,10 +701,11 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		}, 0);
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		activeContext = ctx;
 		settingsManager = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
 		ctx.ui.setWidget(WIDGET_ID, undefined);
+		restoreReloadStash(event.reason, ctx);
 		installEditor(ctx);
 		scheduleEditorInstall(ctx);
 		renderQueue(ctx);
@@ -597,6 +734,17 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			queue.enqueue(event.streamingBehavior, event.text, event.images);
 			paused = false;
 			renderQueue(ctx);
+			return { action: "handled" };
+		}
+
+		// Idle command submissions (e.g. alt+enter bypasses Pi's built-in dispatch)
+		// would otherwise reach the LLM as text. Route them through the queue; when
+		// nothing is running they execute immediately.
+		if (event.streamingBehavior === undefined && parseQueuedCommand(event.text) && (ctx.isIdle() || commandRunning)) {
+			queue.enqueue("followUp", event.text, event.images ?? []);
+			paused = false;
+			renderQueue(ctx);
+			if (!commandRunning && ctx.isIdle()) dispatchFromIdle(ctx);
 			return { action: "handled" };
 		}
 
@@ -642,6 +790,23 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		editSession = undefined;
 		settingsManager = undefined;
 		paused = false;
+		commandRunning = false;
+		tuiSubmit = undefined;
 		queue.clear();
 	});
+
+	/** Re-adopt rows that a queued /reload parked across the runtime swap. */
+	function restoreReloadStash(reason: string, ctx: ExtensionContext): void {
+		const stash = globalStore[RELOAD_STASH_KEY] as ReloadStash | undefined;
+		delete globalStore[RELOAD_STASH_KEY];
+		if (!stash || reason !== "reload" || Date.now() - stash.at > 30_000 || stash.rows.length === 0) return;
+		for (const row of stash.rows) queue.enqueue(row.lane, row.text, row.images);
+		ctx.ui.notify(`Restored ${stash.rows.length} queued row${stash.rows.length === 1 ? "" : "s"} after reload`, "info");
+		setTimeout(() => {
+			const current = activeContext;
+			if (current && !paused && !editSession && queue.length > 0 && current.isIdle()) {
+				dispatchFromIdle(current);
+			}
+		}, 0);
+	}
 }

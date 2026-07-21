@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add command rows: `/compact [instructions]` and `/reload` queue in FIFO position and execute only once the agent is idle, so rows behind them wait — e.g. a queued `continue` delivers after compaction completes.
+- Block mid-run `Enter` on a command with a follow-up hint instead of Pi's built-in dispatch, which aborts the active run.
+- Restore rows queued behind a `/reload` after the runtime swap.
+- Execute idle `Option+Enter` command submissions instead of letting them reach the LLM as text.
+
 - Add `Option+X` to mark the selected row for removal — deleted on save, restored by `Escape` or a second press, and finally covering image-only rows.
 - Add `Option+T` to re-lane the selected row between steering and follow-up, previewing at its destination tail before the save commits it.
 - Navigate row selection through the visual timeline so lane previews and `Option+Up`/`Option+Down` movement stay aligned.

@@ -1,5 +1,26 @@
 export type QueueLane = "steer" | "followUp";
 
+/** A queued row that executes a Pi command instead of becoming an LLM message. */
+export interface QueuedCommand {
+	kind: "compact" | "reload";
+	instructions?: string;
+}
+
+/**
+ * Parse row text as a queueable command. Commands are recognised at dispatch
+ * and render time, so editing a row into or out of command form just works.
+ */
+export function parseQueuedCommand(text: string): QueuedCommand | undefined {
+	const trimmed = text.trim();
+	if (trimmed === "/reload") return { kind: "reload" };
+	if (trimmed === "/compact") return { kind: "compact" };
+	if (trimmed.startsWith("/compact ")) {
+		const instructions = trimmed.slice("/compact ".length).trim();
+		return { kind: "compact", instructions: instructions || undefined };
+	}
+	return undefined;
+}
+
 export interface QueuedMessage<TImage = unknown> {
 	id: string;
 	lane: QueueLane;
@@ -88,6 +109,23 @@ export class DeliveryQueue<TImage = unknown> {
 		const removed = this.items.filter((item) => item.lane === lane).map((item) => this.copy(item));
 		this.items = this.items.filter((item) => item.lane !== lane);
 		return removed;
+	}
+
+	/**
+	 * Shift rows from the lane head while the predicate accepts them, preserving
+	 * FIFO order. Stops at (and keeps) the first rejected row, so an `all`-mode
+	 * batch never crosses a command row.
+	 */
+	shiftWhile(lane: QueueLane, accept: (item: QueuedMessage<TImage>) => boolean): QueuedMessage<TImage>[] {
+		const taken: QueuedMessage<TImage>[] = [];
+		for (;;) {
+			const index = this.items.findIndex((item) => item.lane === lane);
+			if (index === -1 || !accept(this.items[index])) break;
+			const [item] = this.items.splice(index, 1);
+			if (!item) break;
+			taken.push(this.copy(item));
+		}
+		return taken;
 	}
 
 	get(id: string): QueuedMessage<TImage> | undefined {

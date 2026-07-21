@@ -69,6 +69,17 @@ The extension keeps Pi’s 2 delivery classes:
 
 The extension hands messages back to Pi’s native queues only when their delivery boundary arrives. They remain visible and editable before that point. Pi records delivered rows as normal user messages.
 
+## Command rows
+
+Rows whose text is exactly `/compact`, `/compact <instructions>` or `/reload` are command rows. They execute the Pi command instead of becoming an LLM message:
+
+- `Option+Enter` while the agent works queues the command in follow-up order
+- a command row executes only once the agent is idle; rows behind it wait — so `/compact` followed by `continue` compacts first and delivers `continue` after compaction completes
+- `/reload` runs Pi’s built-in reload; rows queued behind it are restored after the runtime swap
+- `Enter` on a command while the agent works shows a hint instead of Pi’s built-in dispatch, which would abort the active run
+- `Option+Enter` on a command while the agent is idle executes it immediately instead of sending the text to the model
+- command rows show a `⚙` marker and pause, resume and edit like any other row; editing a row into or out of command form just works
+
 ## Editing semantics
 
 - `Option+Up` starts at the row you queued most recently
@@ -113,7 +124,7 @@ npm run ci
 pi -e ./index.ts
 ```
 
-The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, removal marks, lane toggles, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
+The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, removal marks, lane toggles, command-row parsing and batch cuts, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
 
 Tested with Pi 0.80.9.
 
