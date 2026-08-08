@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.80.9",
-    "@earendil-works/pi-coding-agent": "0.80.9",
+    "@earendil-works/pi-coding-agent": "0.84.1",
     "@earendil-works/pi-tui": "0.80.9",
     "@types/node": "24.12.4",
     "tsx": "4.22.1",
