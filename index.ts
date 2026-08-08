@@ -253,13 +253,6 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		followUp: settingsManager?.getFollowUpMode() ?? "one-at-a-time",
 	});
 
-	const prepareQueuedItems = (
-		items: readonly QueuedMessage<ImageContent>[],
-	): QueuedMessage<ImageContent>[] => {
-		const commands = pi.getCommands();
-		return items.map((item) => ({ ...item, text: expandQueuedInput(item.text, commands) }));
-	};
-
 	const pauseAfterPreparationFailure = (ctx: ExtensionContext, lane: QueueLane, error: unknown): void => {
 		paused = true;
 		renderQueue(ctx);
@@ -360,9 +353,8 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		if (items.length === 0) return false;
 		let prepared: QueuedMessage<ImageContent>[];
 		try {
-			// Resolve every row before sending any of an all-mode batch. A bad
-			// resource must not cause earlier rows to be sent and then restored.
-			prepared = prepareQueuedItems(items);
+			const commands = pi.getCommands();
+			prepared = items.map((item) => ({ ...item, text: expandQueuedInput(item.text, commands) }));
 		} catch (error) {
 			queue.prependMany(items);
 			pauseAfterPreparationFailure(ctx, lane, error);
@@ -453,6 +445,33 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		return true;
 	};
 
+	const sendHeadMessage = (ctx: ExtensionContext, lane: QueueLane, deliverAs?: QueueLane): boolean => {
+		const head = queue.peek(lane);
+		if (!head) return false;
+		let prepared: QueuedMessage<ImageContent>;
+		try {
+			prepared = { ...head, text: expandQueuedInput(head.text, pi.getCommands()) };
+		} catch (error) {
+			pauseAfterPreparationFailure(ctx, lane, error);
+			return false;
+		}
+		queue.shift(lane);
+		paused = false;
+		renderQueue(ctx);
+		try {
+			pi.sendUserMessage(userContent(prepared), deliverAs ? { deliverAs } : undefined);
+			return true;
+		} catch (error) {
+			queue.prepend(head);
+			renderQueue(ctx);
+			ctx.ui.notify(
+				`Could not send queued ${laneLabel(lane)}: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return false;
+		}
+	};
+
 	const dispatchFromIdle = (ctx: ExtensionContext): boolean => {
 		activeContext = ctx;
 		if (commandRunning) {
@@ -470,30 +489,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		}
 		const head = queue.peek(lane);
 		if (head && parseQueuedCommand(head.text)) return executeCommandRow(ctx, lane);
-		if (!head) return false;
-		let prepared: QueuedMessage<ImageContent>;
-		try {
-			prepared = { ...head, text: expandQueuedInput(head.text, pi.getCommands()) };
-		} catch (error) {
-			pauseAfterPreparationFailure(ctx, lane, error);
-			return false;
-		}
-		const next = queue.shift(lane);
-		if (!next) return false;
-		paused = false;
-		renderQueue(ctx);
-		try {
-			pi.sendUserMessage(userContent(prepared));
-			return true;
-		} catch (error) {
-			queue.prepend(next);
-			renderQueue(ctx);
-			ctx.ui.notify(
-				`Could not send queued ${laneLabel(lane)}: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-			return false;
-		}
+		return sendHeadMessage(ctx, lane);
 	};
 
 	const sendFollowUpNow = (ctx: ExtensionContext): boolean => {
@@ -507,28 +503,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			}
 			return executeCommandRow(ctx, "followUp");
 		}
-		let prepared: QueuedMessage<ImageContent>;
-		try {
-			prepared = { ...head, text: expandQueuedInput(head.text, pi.getCommands()) };
-		} catch (error) {
-			pauseAfterPreparationFailure(ctx, "followUp", error);
-			return false;
-		}
-		const next = queue.shift("followUp");
-		if (!next) return false;
-		renderQueue(ctx);
-		try {
-			pi.sendUserMessage(userContent(prepared), ctx.isIdle() ? undefined : { deliverAs: "steer" });
-			return true;
-		} catch (error) {
-			queue.prepend(next);
-			renderQueue(ctx);
-			ctx.ui.notify(
-				`Could not send queued follow-up: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-			return false;
-		}
+		return sendHeadMessage(ctx, "followUp", ctx.isIdle() ? undefined : "steer");
 	};
 
 	const finishEditing = (

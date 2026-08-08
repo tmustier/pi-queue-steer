@@ -71,15 +71,9 @@ The extension hands messages back to Pi’s native queues only when their delive
 
 ## Prompt templates and Agent Skills
 
-Discovered prompt templates and Agent Skills can be queued in either lane. They stay as short, editable invocations while visible, then expand when delivered:
+Queued `/do-less this code`, `/skill:bro` and `/bro` rows stay short and editable, then expand when delivered. `/bro` is shorthand for `/skill:bro` unless a built-in, prompt or extension already uses that name. Template arguments and images are preserved; unknown slash input remains ordinary text.
 
-- `/do-less this code` expands the `do-less` prompt template with its arguments
-- `/skill:bro` expands the `bro` Agent Skill using Pi’s native command form
-- `/bro` is a queue-steer shorthand for `/skill:bro` when no Pi built-in, prompt or extension command already owns `/bro`
-
-Prompt-template positional arguments, defaults and slices work as they do in Pi. Images remain attached to the expanded prompt. Unknown slash input remains ordinary message text.
-
-Pi does not expose a public way for extensions to invoke arbitrary extension or built-in commands. A discovered extension command edited into a row therefore stays queued and pauses delivery with an error; edit or remove that row before resuming. `/compact` and `/reload` are the supported built-in exceptions below.
+Pi cannot invoke arbitrary commands through its public extension API. `/compact` and `/reload` are the supported built-ins. A queued extension command pauses delivery until you edit or remove it.
 
 ## Command rows
 
@@ -136,7 +130,7 @@ npm run ci
 pi -e ./index.ts
 ```
 
-The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, removal marks, lane toggles, command-row parsing and batch cuts, prompt-template and Agent Skill expansion, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
+The automated suite covers delivery, editing, command rows, resource expansion, recovery, images and editor composition. Check TUI changes in a real Pi session as well.
 
 Automated against Pi 0.80.9 and smoke-tested interactively with Pi 0.84.1.
 

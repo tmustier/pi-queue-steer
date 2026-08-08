@@ -656,7 +656,6 @@ test("expands queued prompt templates and short Agent Skill commands at delivery
 		source: "test",
 		scope: "temporary" as const,
 		origin: "top-level" as const,
-		baseDir: dir,
 	});
 	const harness = createHarness({
 		commands: [
