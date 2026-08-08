@@ -69,6 +69,18 @@ The extension keeps Pi’s 2 delivery classes:
 
 The extension hands messages back to Pi’s native queues only when their delivery boundary arrives. They remain visible and editable before that point. Pi records delivered rows as normal user messages.
 
+## Prompt templates and Agent Skills
+
+Discovered prompt templates and Agent Skills can be queued in either lane. They stay as short, editable invocations while visible, then expand when delivered:
+
+- `/do-less this code` expands the `do-less` prompt template with its arguments
+- `/skill:bro` expands the `bro` Agent Skill using Pi’s native command form
+- `/bro` is a queue-steer shorthand for `/skill:bro` when no Pi built-in, prompt or extension command already owns `/bro`
+
+Prompt-template positional arguments, defaults and slices work as they do in Pi. Images remain attached to the expanded prompt. Unknown slash input remains ordinary message text.
+
+Pi does not expose a public way for extensions to invoke arbitrary extension or built-in commands. A discovered extension command edited into a row therefore stays queued and pauses delivery with an error; edit or remove that row before resuming. `/compact` and `/reload` are the supported built-in exceptions below.
+
 ## Command rows
 
 Rows whose text is exactly `/compact`, `/compact <instructions>` or `/reload` are command rows. They execute the Pi command instead of becoming an LLM message:
@@ -124,9 +136,9 @@ npm run ci
 pi -e ./index.ts
 ```
 
-The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, removal marks, lane toggles, command-row parsing and batch cuts, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
+The automated suite covers both lanes, queue modes, delivery boundaries, stable edits, rollback, removal marks, lane toggles, command-row parsing and batch cuts, prompt-template and Agent Skill expansion, abort recovery, image preservation, failed handoffs, editor-frame extraction and editor composition. Check TUI changes in a real interactive Pi session as well.
 
-Tested with Pi 0.80.9.
+Automated against Pi 0.80.9 and smoke-tested interactively with Pi 0.84.1.
 
 ## Security
 

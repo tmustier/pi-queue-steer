@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import queueSteerExtension from "../index.ts";
 import { DeliveryQueue, QueueEditSession, type QueueLane } from "../queue-state.ts";
@@ -156,7 +157,11 @@ class MockEditor {
 	invalidate(): void {}
 }
 
-function createHarness(options: { cwd?: string; projectTrusted?: boolean } = {}) {
+function createHarness(options: {
+	cwd?: string;
+	projectTrusted?: boolean;
+	commands?: SlashCommandInfo[];
+} = {}) {
 	type Handler = (event: any, context: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	const sent: Array<{ content: unknown; options: any }> = [];
@@ -218,6 +223,7 @@ function createHarness(options: { cwd?: string; projectTrusted?: boolean } = {})
 			sent.push({ content, options });
 			if (options) pending = true;
 		},
+		getCommands: () => options.commands ?? [],
 	};
 
 	queueSteerExtension(pi as any);
@@ -637,4 +643,84 @@ test("recomposes after another extension installs editor chrome on a later tick"
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	harness.editor.handleInput("alt-up");
 	assert.equal(harness.editor.getText(), "original");
+});
+
+test("expands queued prompt templates and short Agent Skill commands at delivery", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-queue-resources-"));
+	const promptPath = join(dir, "do-less.md");
+	const skillPath = join(dir, "SKILL.md");
+	writeFileSync(promptPath, "---\ndescription: Do less\n---\nReview $1 and simplify it.");
+	writeFileSync(skillPath, "---\nname: bro\ndescription: Speak plainly\n---\nSpeak plainly.");
+	const sourceInfo = (path: string) => ({
+		path,
+		source: "test",
+		scope: "temporary" as const,
+		origin: "top-level" as const,
+		baseDir: dir,
+	});
+	const harness = createHarness({
+		commands: [
+			{ name: "do-less", source: "prompt", sourceInfo: sourceInfo(promptPath) },
+			{ name: "skill:bro", source: "skill", sourceInfo: sourceInfo(skillPath) },
+		],
+	});
+	const image = { type: "image", source: { type: "base64", mediaType: "image/png", data: "AA==" } };
+	try {
+		await harness.emit("session_start");
+		await harness.emit("input", {
+			source: "interactive",
+			text: "/do-less this",
+			images: [image],
+			streamingBehavior: "followUp",
+		});
+		await enqueue(harness, "steer", "/bro make this clearer");
+
+		await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
+		assert.match(String(harness.sent[0]?.content), /<skill name="bro"/);
+		assert.match(String(harness.sent[0]?.content), /make this clearer$/);
+
+		harness.clearPending();
+		await harness.emit("agent_end");
+		assert.deepEqual(harness.sent[1]?.content, [
+			{ type: "text", text: "Review this and simplify it." },
+			image,
+		]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("an expansion failure restores and pauses an entire all-mode batch", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-queue-expansion-failure-"));
+	mkdirSync(join(cwd, ".pi"));
+	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ followUpMode: "all" }));
+	const missingPath = join(cwd, "missing.md");
+	const harness = createHarness({
+		cwd,
+		projectTrusted: true,
+		commands: [{
+			name: "missing",
+			source: "prompt",
+			sourceInfo: {
+				path: missingPath,
+				source: "test",
+				scope: "temporary",
+				origin: "top-level",
+			},
+		}],
+	});
+	try {
+		await harness.emit("session_start");
+		await enqueue(harness, "followUp", "sendable first");
+		await enqueue(harness, "followUp", "/missing");
+
+		await harness.emit("agent_end");
+		assert.equal(harness.sent.length, 0);
+		assert.match(renderWidget(harness), /sendable first/);
+		assert.match(renderWidget(harness), /\/missing/);
+		assert.match(renderWidget(harness), /paused/);
+		assert.match(harness.notifications.at(-1)?.message ?? "", /Could not prepare queued follow-up; queue paused/);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 });

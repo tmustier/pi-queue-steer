@@ -23,6 +23,7 @@
     "index.ts",
     "editor-render.ts",
     "queue-state.ts",
+    "queued-input.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",

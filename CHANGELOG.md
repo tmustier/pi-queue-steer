@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expand queued prompt templates and Agent Skills at delivery, including prompt arguments, image attachments and short skill aliases such as `/bro` alongside Pi’s native `/skill:bro` syntax.
+- Restore and pause the full affected batch if a queued resource cannot be expanded.
 - Add command rows: `/compact [instructions]` and `/reload` queue in FIFO position and execute only once the agent is idle, so rows behind them wait — e.g. a queued `continue` delivers after compaction completes.
 - Queue a mid-run `Enter` on `/reload` instead of surfacing Pi's built-in "wait until the agent finishes" warning; mid-run `Enter` on `/compact` keeps Pi's built-in behaviour.
 - Restore rows queued behind a `/reload` after the runtime swap.
