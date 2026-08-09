@@ -230,9 +230,8 @@ function userContent(item: QueuedMessage<ImageContent>): string | (TextContent |
 }
 
 function itemCommand(item: Pick<QueuedMessage<ImageContent>, "text" | "images">): QueuedCommand | undefined {
-	// Treat an image-bearing row as a message so executing a command can never
-	// silently discard its attachments.
-	return item.images.length === 0 ? parseQueuedCommand(item.text) : undefined;
+	if (item.images.length > 0) return undefined;
+	return parseQueuedCommand(item.text);
 }
 
 export default function queueSteerExtension(pi: ExtensionAPI) {
@@ -268,15 +267,6 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		steer: settingsManager?.getSteeringMode() ?? "one-at-a-time",
 		followUp: settingsManager?.getFollowUpMode() ?? "one-at-a-time",
 	});
-
-	const pauseAfterPreparationFailure = (ctx: ExtensionContext, lane: QueueLane, error: unknown): void => {
-		paused = true;
-		renderQueue(ctx);
-		ctx.ui.notify(
-			`Could not prepare queued ${laneLabel(lane)}; queue paused: ${error instanceof Error ? error.message : String(error)}`,
-			"error",
-		);
-	};
 
 	const laneIsHeld = (lane: QueueLane): boolean => {
 		if (!editSession) return false;
@@ -353,7 +343,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 	// A command row at the lane head holds everything behind it (FIFO) until the
 	// agent settles and dispatchFromIdle executes it.
 	const takeLaneBatch = (lane: QueueLane): QueuedMessage<ImageContent>[] => {
-		if (paused || blockingActivity || queue.laneLength(lane) === 0 || laneIsHeld(lane)) return [];
+		if (paused || blockingActivity || laneIsHeld(lane)) return [];
 		const isMessage = (item: QueuedMessage<ImageContent>) => itemCommand(item) === undefined;
 		if (queueModes()[lane] === "all") return queue.shiftWhile(lane, isMessage);
 		const head = queue.peek(lane);
@@ -362,75 +352,61 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		return item ? [item] : [];
 	};
 
-	const deliverBatchToNativeQueue = async (
+	const deliverMessages = (
 		ctx: ExtensionContext,
 		lane: QueueLane,
-		items: QueuedMessage<ImageContent>[],
-	): Promise<boolean> => {
-		if (items.length === 0) return false;
+		items: readonly QueuedMessage<ImageContent>[],
+		deliverAs?: QueueLane,
+	): void => {
 		let prepared: QueuedMessage<ImageContent>[];
 		try {
 			const commands = pi.getCommands();
 			prepared = items.map((item) => ({ ...item, text: expandQueuedInput(item.text, commands) }));
 		} catch (error) {
 			queue.prependMany(items);
-			pauseAfterPreparationFailure(ctx, lane, error);
-			return false;
-		}
-		renderQueue(ctx);
-		let submitted = 0;
-		try {
-			for (const item of prepared) {
-				pi.sendUserMessage(userContent(item), { deliverAs: lane });
-				submitted += 1;
-			}
-			// The public send API is fire-and-forget. Once invoked, do not infer
-			// rejection from aggregate queue timing: a delayed preflight could
-			// otherwise accept the original after we restored and duplicate it.
-			return true;
-		} catch (error) {
-			queue.prependMany(items.slice(submitted));
+			paused = true;
 			renderQueue(ctx);
 			ctx.ui.notify(
-				`Could not deliver queued ${laneLabel(lane)}: ${error instanceof Error ? error.message : String(error)}`,
+				`Could not prepare queued ${laneLabel(lane)}; queue paused: ${error instanceof Error ? error.message : String(error)}`,
 				"error",
 			);
-			return false;
+			return;
+		}
+		renderQueue(ctx);
+		for (const item of prepared) {
+			pi.sendUserMessage(userContent(item), deliverAs ? { deliverAs } : undefined);
 		}
 	};
 
-	const dispatchLaneAtBoundary = async (ctx: ExtensionContext, lane: QueueLane): Promise<boolean> => {
+	const dispatchLaneAtBoundary = (ctx: ExtensionContext, lane: QueueLane): void => {
 		activeContext = ctx;
 		const items = takeLaneBatch(lane);
 		if (items.length === 0) {
 			renderQueue(ctx);
-			return false;
+			return;
 		}
-		return deliverBatchToNativeQueue(ctx, lane, items);
+		deliverMessages(ctx, lane, items, lane);
 	};
 
 	// Execute the command row at the lane head. Only called when the agent is idle.
-	const executeCommandRow = (ctx: ExtensionContext, lane: QueueLane): boolean => {
+	const executeCommandRow = (ctx: ExtensionContext, lane: QueueLane): void => {
 		const next = queue.peek(lane);
-		if (!next) return false;
+		if (!next) return;
 		const command = itemCommand(next);
-		if (!command) return false;
+		if (!command) return;
 		const submit = tuiSubmit;
 		if (command.kind === "reload" && !submit) {
 			paused = true;
 			renderQueue(ctx);
 			ctx.ui.notify("Could not run queued /reload; queue paused because no interactive submit handler is available", "error");
-			return false;
+			return;
 		}
 		queue.shift(lane);
 		paused = false;
 		renderQueue(ctx);
 		if (command.kind === "compact") {
-			if (startCompaction(ctx, command.instructions)) return true;
-			queue.prepend(next);
-			paused = true;
-			renderQueue(ctx);
-			return false;
+			startCompaction(ctx, command.instructions);
+			return;
 		}
 		blockingActivity = "reload";
 		// Defer so the extension runtime is never torn down from inside this handler.
@@ -438,41 +414,20 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			reloadSubmitTimer = undefined;
 			submit?.("/reload");
 		}, 0);
-		return true;
 	};
 
-	const sendHeadMessage = (ctx: ExtensionContext, lane: QueueLane, deliverAs?: QueueLane): boolean => {
-		const head = queue.peek(lane);
-		if (!head) return false;
-		let prepared: QueuedMessage<ImageContent>;
-		try {
-			prepared = { ...head, text: expandQueuedInput(head.text, pi.getCommands()) };
-		} catch (error) {
-			pauseAfterPreparationFailure(ctx, lane, error);
-			return false;
-		}
-		queue.shift(lane);
+	const sendHeadMessage = (ctx: ExtensionContext, lane: QueueLane, deliverAs?: QueueLane): void => {
+		const head = queue.shift(lane);
+		if (!head) return;
 		paused = false;
-		renderQueue(ctx);
-		try {
-			pi.sendUserMessage(userContent(prepared), deliverAs ? { deliverAs } : undefined);
-			return true;
-		} catch (error) {
-			queue.prepend(head);
-			renderQueue(ctx);
-			ctx.ui.notify(
-				`Could not send queued ${laneLabel(lane)}: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-			return false;
-		}
+		deliverMessages(ctx, lane, [head], deliverAs);
 	};
 
-	const dispatchFromIdle = (ctx: ExtensionContext): boolean => {
+	const dispatchFromIdle = (ctx: ExtensionContext): void => {
 		activeContext = ctx;
 		if (blockingActivity) {
 			renderQueue(ctx);
-			return false;
+			return;
 		}
 		const lane: QueueLane | undefined = queue.laneLength("steer") > 0
 			? "steer"
@@ -481,11 +436,14 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 				: undefined;
 		if (!lane || laneIsHeld(lane)) {
 			renderQueue(ctx);
-			return false;
+			return;
 		}
 		const head = queue.peek(lane);
-		if (head && itemCommand(head)) return executeCommandRow(ctx, lane);
-		return sendHeadMessage(ctx, lane);
+		if (head && itemCommand(head)) {
+			executeCommandRow(ctx, lane);
+			return;
+		}
+		sendHeadMessage(ctx, lane);
 	};
 
 	const deferCompactionFinish = (
@@ -510,29 +468,19 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		}, 0);
 	};
 
-	const startCompaction = (ctx: ExtensionContext, instructions: string | undefined): boolean => {
+	const startCompaction = (ctx: ExtensionContext, instructions: string | undefined): void => {
 		blockingActivity = "compact";
 		nativeCompactionInputQueued = false;
 		nativeCompactionTurnStarted = false;
-		try {
-			ctx.compact({
-				customInstructions: instructions,
-				onComplete: () => {
-					if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
-				},
-				onError: () => {
-					if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
-				},
-			});
-			return true;
-		} catch (error) {
-			blockingActivity = undefined;
-			ctx.ui.notify(
-				`Could not start compaction: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-			return false;
-		}
+		ctx.compact({
+			customInstructions: instructions,
+			onComplete: () => {
+				if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
+			},
+			onError: () => {
+				if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
+			},
+		});
 	};
 
 	const deferCommand = (ctx: ExtensionContext, text: string): void => {
@@ -541,18 +489,19 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		renderQueue(ctx);
 	};
 
-	const sendFollowUpNow = (ctx: ExtensionContext): boolean => {
+	const sendFollowUpNow = (ctx: ExtensionContext): void => {
 		const head = queue.peek("followUp");
-		if (!head) return false;
+		if (!head) return;
 		const headCommand = itemCommand(head);
 		if (headCommand) {
 			if (blockingActivity === "reload" || !ctx.isIdle()) {
 				ctx.ui.notify(`Queued /${headCommand.kind} runs when the agent is idle`, "info");
-				return false;
+				return;
 			}
-			return executeCommandRow(ctx, "followUp");
+			executeCommandRow(ctx, "followUp");
+			return;
 		}
-		return sendHeadMessage(ctx, "followUp", ctx.isIdle() ? undefined : "steer");
+		sendHeadMessage(ctx, "followUp", ctx.isIdle() ? undefined : "steer");
 	};
 
 	const finishEditing = (
@@ -857,7 +806,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		if (isCompacting() && nativeCompactionInputQueued) nativeCompactionTurnStarted = true;
 	});
 
-	pi.on("turn_end", async (event, ctx) => {
+	pi.on("turn_end", (event, ctx) => {
 		activeContext = ctx;
 		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
 			if (queue.length > 0 && blockingActivity !== "compact") paused = true;
@@ -865,13 +814,13 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			return;
 		}
 		if (paused) return;
-		await dispatchLaneAtBoundary(ctx, "steer");
+		dispatchLaneAtBoundary(ctx, "steer");
 	});
 
 	// Pi checks its native queues again after extension agent_end handlers.
 	// Feeding one item (or an all-mode batch) here preserves native follow-up
 	// continuation semantics without relinquishing later editable rows early.
-	pi.on("agent_end", async (event, ctx) => {
+	pi.on("agent_end", (event, ctx) => {
 		activeContext = ctx;
 		if (paused) return;
 		const lastMessage = event.messages.at(-1);
@@ -888,10 +837,10 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			return;
 		}
 		if (queue.laneLength("steer") > 0) {
-			await dispatchLaneAtBoundary(ctx, "steer");
+			dispatchLaneAtBoundary(ctx, "steer");
 			return;
 		}
-		await dispatchLaneAtBoundary(ctx, "followUp");
+		dispatchLaneAtBoundary(ctx, "followUp");
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {

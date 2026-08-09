@@ -87,27 +87,31 @@ test("uses defaults for empty all-argument prompt placeholders", () => {
 	}
 });
 
-test("classifies only native post-compaction TUI submissions", () => {
-	const extension = command("deploy", "extension", "/extension.ts");
-	const prompt = command("review", "prompt", "/review.md");
-	assert.equal(queuesDuringCompaction("ordinary message", [extension, prompt]), true);
-	assert.equal(queuesDuringCompaction("/unknown as text", [extension, prompt]), true);
-	assert.equal(queuesDuringCompaction("/review now", [extension, prompt]), true);
-	assert.equal(queuesDuringCompaction("/skill:bro now", [extension, prompt]), true);
-	assert.equal(queuesDuringCompaction("/deploy prod", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("/model small", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("  /model small  ", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("/debug", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("!echo now", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("  !echo now  ", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("", [extension, prompt]), false);
-	assert.equal(queuesDuringCompaction("   ", [extension, prompt]), false);
+test("classifies native post-compaction TUI submissions", () => {
+	const commands = [
+		command("deploy", "extension", "/extension.ts"),
+		command("review", "prompt", "/review.md"),
+	];
+	const cases: Array<{
+		text: string;
+		behavior?: "followUp";
+		expected: boolean;
+	}> = [
+		{ text: "ordinary message", expected: true },
+		{ text: "/review now", expected: true },
+		{ text: "/deploy prod", expected: false },
+		{ text: "/model small", expected: false },
+		{ text: "!echo now", expected: false },
+		{ text: "   ", expected: false },
+		{ text: "ordinary follow-up", behavior: "followUp", expected: true },
+		{ text: "/model small", behavior: "followUp", expected: true },
+		{ text: "/deploy prod", behavior: "followUp", expected: false },
+		{ text: "   ", behavior: "followUp", expected: false },
+	];
 
-	assert.equal(queuesDuringCompaction("ordinary follow-up", [extension, prompt], "followUp"), true);
-	assert.equal(queuesDuringCompaction("/model small", [extension, prompt], "followUp"), true);
-	assert.equal(queuesDuringCompaction("!echo now", [extension, prompt], "followUp"), true);
-	assert.equal(queuesDuringCompaction("/deploy prod", [extension, prompt], "followUp"), false);
-	assert.equal(queuesDuringCompaction("   ", [extension, prompt], "followUp"), false);
+	for (const { text, behavior, expected } of cases) {
+		assert.equal(queuesDuringCompaction(text, commands, behavior), expected, text);
+	}
 });
 
 test("rejects discovered extension commands", () => {

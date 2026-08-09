@@ -82,7 +82,7 @@ Text-only rows whose text is exactly `/compact`, `/compact <instructions>` or `/
 - `Option+Enter` while the agent works queues the command in follow-up order
 - a command row executes only once the agent is idle; rows behind it wait — so `/compact` followed by `continue` compacts first and delivers `continue` after compaction completes
 - `/reload` runs Pi’s built-in reload; committed rows queued behind it retain their IDs, lanes, attachments and pause state across the runtime swap
-- idle `/compact` uses Pi’s public compaction API so queued rows resume when compaction finishes; a start failure restores and pauses the command row
+- idle `/compact` uses Pi’s public compaction API so queued rows resume when compaction completes or reports an error
 - `/reload` submitted while the agent works or tracked compaction runs stays queued instead of showing Pi’s built-in wait warning
 - `Enter` on `/compact` while the agent works uses Pi’s public compaction API and holds visible rows until compaction settles
 - ordinary messages submitted during compaction remain in Pi’s native queue and can run before extension-owned command rows after compaction finishes
@@ -109,13 +109,13 @@ A touched head row is pinned until you save or cancel. In `one-at-a-time` mode, 
 
 Aborting a run pauses both visible lanes. This prevents a follow-up from starting immediately after the abort.
 
-Press `Enter` on the empty composer to resume. A synchronous handoff or preflight failure returns the affected batch to the front of its lane.
+Press `Enter` on the empty composer to resume. A prompt or Skill expansion failure returns the affected batch to the front of its lane.
 
 Queue state, pause state and edit drafts are session-local. They never enter the Pi transcript or persistent session data. A `/reload` runtime swap carries committed rows and pause state through a short in-process handoff; unsaved edit drafts do not cross the swap.
 
 ## Public API limits
 
-Pi’s public `sendUserMessage` API is fire-and-forget. The extension restores synchronous dispatch failures and preflight/expansion failures without reordering, but Pi does not expose later asynchronous input rejection to extensions. Inferring rejection from queue timing could duplicate a delayed successful handoff, so the extension does not do that.
+Pi’s public `sendUserMessage` API is fire-and-forget. The extension restores prompt and Skill expansion failures before handoff, but Pi does not expose asynchronous input rejection to extensions. Inferring rejection from queue timing could duplicate a delayed successful handoff, so the extension does not do that.
 
 Pi also exposes queued `/reload` only through the TUI editor’s `void` submit callback. The extension prevents known busy and compaction conflicts and restores trailing rows on a successful runtime swap, but Pi cannot acknowledge or reject that submit back to the extension.
 
@@ -140,7 +140,7 @@ pi -e ./index.ts
 
 The automated suite covers delivery, editing, command rows, resource expansion, recovery, images, editor composition, repeated reloads, real retry ordering, real manual compaction success/failure and real automatic overflow compaction. The tmux harness exercises the same paths through Pi's real TUI, including actual runtime reloads and native post-compaction input.
 
-The Pi package ranges are intentionally unpinned. The full suite and real-TUI harness are verified against the current resolved Pi release; see [the validation record](docs/validation.md) for exact commands and evidence.
+The Pi package ranges are intentionally unpinned. The full suite and real-TUI harness are verified against the current resolved Pi release; see [the validation guide](docs/validation.md) for the commands and generated evidence.
 
 ## Security
 

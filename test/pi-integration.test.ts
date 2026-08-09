@@ -66,28 +66,6 @@ function nextAgentRun(session: AgentSession): Promise<void> {
 	});
 }
 
-function nextAgentRunForUser(session: AgentSession, expected: string): Promise<void> {
-	return new Promise((resolve) => {
-		let matched = false;
-		let unsubscribe: (() => void) | undefined;
-		unsubscribe = session.subscribe((event) => {
-			if (event.type === "message_start" && event.message.role === "user") {
-				const text = typeof event.message.content === "string"
-					? event.message.content
-					: event.message.content
-						.filter((part) => part.type === "text")
-						.map((part) => part.text)
-						.join("\n");
-				if (text === expected) matched = true;
-				return;
-			}
-			if (event.type !== "agent_settled" || !matched) return;
-			unsubscribe?.();
-			resolve();
-		});
-	});
-}
-
 async function within<T>(promise: Promise<T>, detail: () => string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -358,7 +336,25 @@ test("real public prompt path triggers overflow compaction and preserves a queue
 		const prompt = harness.session.prompt("x".repeat(20_000));
 		await within(activeStarted, () => trace.join(", "));
 		await harness.session.prompt("queued across overflow", { streamingBehavior: "followUp" });
-		const queuedRun = nextAgentRunForUser(harness.session, "queued across overflow");
+		const queuedRun = new Promise<void>((resolve) => {
+			let matched = false;
+			let unsubscribe: (() => void) | undefined;
+			unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "message_start" && event.message.role === "user") {
+					const text = typeof event.message.content === "string"
+						? event.message.content
+						: event.message.content
+							.filter((part) => part.type === "text")
+							.map((part) => part.text)
+							.join("\n");
+					if (text === "queued across overflow") matched = true;
+					return;
+				}
+				if (event.type !== "agent_settled" || !matched) return;
+				unsubscribe?.();
+				resolve();
+			});
+		});
 		active.release();
 		await within(prompt, () => trace.join(", "));
 
