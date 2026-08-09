@@ -62,8 +62,7 @@ export class DeliveryQueue<TImage = unknown> {
 
 	prependMany(items: readonly QueuedMessage<TImage>[]): void {
 		for (let index = items.length - 1; index >= 0; index -= 1) {
-			const item = items[index];
-			if (item) this.prepend(item);
+			this.prepend(items[index]);
 		}
 	}
 
@@ -80,7 +79,6 @@ export class DeliveryQueue<TImage = unknown> {
 		const index = this.items.findIndex((item) => item.id === id);
 		if (index === -1) return false;
 		const [item] = this.items.splice(index, 1);
-		if (!item) return false;
 		item.lane = lane;
 		this.items.push(item);
 		return true;
@@ -90,7 +88,7 @@ export class DeliveryQueue<TImage = unknown> {
 		const index = this.items.findIndex((item) => item.id === id);
 		if (index === -1) return undefined;
 		const [item] = this.items.splice(index, 1);
-		return item ? this.copy(item) : undefined;
+		return this.copy(item);
 	}
 
 	peek(lane: QueueLane): QueuedMessage<TImage> | undefined {
@@ -102,13 +100,7 @@ export class DeliveryQueue<TImage = unknown> {
 		const index = this.items.findIndex((item) => item.lane === lane);
 		if (index === -1) return undefined;
 		const [item] = this.items.splice(index, 1);
-		return item ? this.copy(item) : undefined;
-	}
-
-	shiftAll(lane: QueueLane): QueuedMessage<TImage>[] {
-		const removed = this.items.filter((item) => item.lane === lane).map((item) => this.copy(item));
-		this.items = this.items.filter((item) => item.lane !== lane);
-		return removed;
+		return this.copy(item);
 	}
 
 	/**
@@ -122,7 +114,6 @@ export class DeliveryQueue<TImage = unknown> {
 			const index = this.items.findIndex((item) => item.lane === lane);
 			if (index === -1 || !accept(this.items[index])) break;
 			const [item] = this.items.splice(index, 1);
-			if (!item) break;
 			taken.push(this.copy(item));
 		}
 		return taken;
@@ -131,24 +122,6 @@ export class DeliveryQueue<TImage = unknown> {
 	get(id: string): QueuedMessage<TImage> | undefined {
 		const item = this.items.find((candidate) => candidate.id === id);
 		return item ? this.copy(item) : undefined;
-	}
-
-	previousId(currentId?: string): string | undefined {
-		const ordered = this.snapshot();
-		if (ordered.length === 0) return undefined;
-		if (!currentId) return this.mostRecentId();
-		const index = ordered.findIndex((item) => item.id === currentId);
-		if (index <= 0) return ordered.at(-1)?.id;
-		return ordered[index - 1]?.id;
-	}
-
-	nextId(currentId?: string): string | undefined {
-		const ordered = this.snapshot();
-		if (ordered.length === 0) return undefined;
-		if (!currentId) return this.mostRecentId();
-		const index = ordered.findIndex((item) => item.id === currentId);
-		if (index === -1 || index === ordered.length - 1) return ordered[0]?.id;
-		return ordered[index + 1]?.id;
 	}
 
 	mostRecentId(): string | undefined {
@@ -177,13 +150,10 @@ export class DeliveryQueue<TImage = unknown> {
 
 	/** Restore an in-memory queue snapshot without changing row identity or recency. */
 	restore(items: readonly QueuedMessage<TImage>[]): void {
-		const ids = new Set<string>();
 		let highestIdNumber = 0;
 		let highestSequence = 0;
 		const restored: QueuedMessage<TImage>[] = [];
 		for (const item of items) {
-			if (ids.has(item.id)) throw new Error(`Duplicate queued row ID: ${item.id}`);
-			ids.add(item.id);
 			const idNumber = /-(\d+)$/.exec(item.id)?.[1];
 			if (idNumber) highestIdNumber = Math.max(highestIdNumber, Number.parseInt(idNumber, 10));
 			highestSequence = Math.max(highestSequence, item.sequence);

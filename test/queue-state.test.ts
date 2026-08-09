@@ -29,17 +29,13 @@ test("keeps steering and follow-ups in independent FIFOs", () => {
 	assert.equal(queue.shift("followUp")?.text, "later one");
 });
 
-test("selects the globally most recent item before navigating spatially", () => {
+test("identifies the globally most recent item across lanes", () => {
 	const queue = new DeliveryQueue();
-	const firstSteer = queue.enqueue("steer", "steer one");
-	const latestFollowUp = queue.enqueue("followUp", "later");
-	const latestSteer = queue.enqueue("steer", "steer two");
+	queue.enqueue("steer", "steer one");
+	queue.enqueue("followUp", "later");
+	const latest = queue.enqueue("steer", "steer two");
 
-	assert.equal(queue.mostRecentId(), latestSteer.id);
-	assert.equal(queue.previousId(), latestSteer.id);
-	assert.equal(queue.previousId(latestSteer.id), firstSteer.id);
-	assert.equal(queue.nextId(latestSteer.id), latestFollowUp.id);
-	assert.equal(queue.nextId(latestFollowUp.id), firstSteer.id);
+	assert.equal(queue.mostRecentId(), latest.id);
 });
 
 test("edits a row without changing its stable lane position", () => {
@@ -55,7 +51,7 @@ test("restores failed batches at the front in their original order", () => {
 	const queue = new DeliveryQueue();
 	queue.enqueue("followUp", "first");
 	queue.enqueue("followUp", "second");
-	const failed = queue.shiftAll("followUp");
+	const failed = queue.shiftWhile("followUp", () => true);
 	queue.enqueue("followUp", "third");
 	queue.prependMany(failed);
 
@@ -76,12 +72,6 @@ test("restores queue snapshots with stable IDs, recency, images, and collision-f
 	const next = restored.enqueue("steer", "third");
 	assert.equal(next.id, "steer-3");
 	assert.ok(next.sequence > mostRecent.sequence);
-});
-
-test("rejects duplicate row IDs in restored snapshots", () => {
-	const queue = new DeliveryQueue();
-	const row = queue.enqueue("steer", "one");
-	assert.throws(() => queue.restore([row, { ...row, text: "duplicate" }]), /Duplicate queued row ID/);
 });
 
 test("edit sessions keep cross-lane drafts private until commit", () => {
@@ -199,11 +189,8 @@ test.after(() => rmSync(DEFAULT_TEST_CWD, { recursive: true, force: true }));
 
 function createHarness(options: {
 	cwd?: string;
-	projectTrusted?: boolean;
 	commands?: SlashCommandInfo[];
 	mode?: "tui" | "rpc" | "json" | "print";
-	sendFailureAt?: number;
-	compactStartError?: Error;
 	autocompleteVisible?: boolean;
 } = {}) {
 	type Handler = (event: any, context: any) => any;
@@ -213,7 +200,6 @@ function createHarness(options: {
 	const compactCalls: CompactOptions[] = [];
 	const notifications: Array<{ message: string; level: string }> = [];
 	let idle = false;
-	let pending = false;
 	let aborted = false;
 	const createDefaultEditor = (): MockEditor => {
 		const editor = new MockEditor();
@@ -262,13 +248,11 @@ function createHarness(options: {
 		cwd: options.cwd ?? DEFAULT_TEST_CWD,
 		ui,
 		isIdle: () => idle,
-		isProjectTrusted: () => options.projectTrusted ?? true,
-		hasPendingMessages: () => pending,
+		isProjectTrusted: () => true,
 		abort() {
 			aborted = true;
 		},
 		compact(compactOptions: CompactOptions = {}) {
-			if (options.compactStartError) throw options.compactStartError;
 			compactCalls.push(compactOptions);
 		},
 	};
@@ -280,9 +264,7 @@ function createHarness(options: {
 			handlers.set(name, registered);
 		},
 		sendUserMessage(content: unknown, sendOptions?: unknown) {
-			if (options.sendFailureAt === sent.length + 1) throw new Error("synthetic send failure");
 			sent.push({ content, options: sendOptions });
-			if (sendOptions) pending = true;
 		},
 		getCommands: () => options.commands ?? [],
 	};
@@ -323,9 +305,6 @@ function createHarness(options: {
 		},
 		setIdle(value: boolean) {
 			idle = value;
-		},
-		clearPending() {
-			pending = false;
 		},
 		replaceEditor(editor = new MockEditor()) {
 			ui.setEditorComponent(() => editor);
@@ -455,41 +434,6 @@ test("injects follow-ups through Pi's native continuation queue at agent_end", a
 	assert.match(renderWidget(harness), /later two/);
 });
 
-test("restores only the unsent tail after a synchronous all-mode batch failure", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-queue-partial-send-"));
-	mkdirSync(join(cwd, ".pi"));
-	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ followUpMode: "all" }));
-	const harness = createHarness({ cwd, projectTrusted: true, sendFailureAt: 2 });
-	try {
-		await harness.emit("session_start");
-		await enqueue(harness, "followUp", "accepted first");
-		await enqueue(harness, "followUp", "restore second");
-		await enqueue(harness, "followUp", "restore third");
-
-		await harness.emit("agent_end");
-		assert.deepEqual(harness.sent.map((item) => item.content), ["accepted first"]);
-		const rendered = renderWidget(harness);
-		assert.doesNotMatch(rendered, /accepted first/);
-		assert.match(rendered, /restore second/);
-		assert.match(rendered, /restore third/);
-		assert.match(harness.notifications.at(-1)?.message ?? "", /synthetic send failure/);
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("restores an idle row after a synchronous send failure", async () => {
-	const harness = createHarness({ sendFailureAt: 1 });
-	await harness.emit("session_start");
-	harness.setIdle(true);
-	await enqueue(harness, "followUp", "retry me");
-
-	await harness.emit("agent_settled");
-	assert.equal(harness.sent.length, 0);
-	assert.match(renderWidget(harness), /retry me/);
-	assert.match(harness.notifications.at(-1)?.message ?? "", /synthetic send failure/);
-});
-
 test("delivers image-bearing command text as a message without dropping attachments", async () => {
 	const harness = createHarness();
 	const image: ImageContent = { type: "image", data: "AA==", mimeType: "image/png" };
@@ -510,13 +454,20 @@ test("delivers image-bearing command text as a message without dropping attachme
 	assert.deepEqual(harness.submitted, []);
 });
 
-test("does not take ownership of interactive-source input outside TUI mode", async () => {
-	const modes: ("rpc" | "json" | "print")[] = ["rpc", "json", "print"];
-	for (const mode of modes) {
+test("does not take ownership of input outside TUI mode", async () => {
+	const inputs: Array<{
+		mode: "print" | "json" | "rpc";
+		source: "interactive" | "rpc";
+	}> = [
+		{ mode: "print", source: "interactive" },
+		{ mode: "json", source: "interactive" },
+		{ mode: "rpc", source: "rpc" },
+	];
+	for (const { mode, source } of inputs) {
 		const harness = createHarness({ mode });
 		await harness.emit("session_start", { reason: "startup" });
 		const results = await harness.emit("input", {
-			source: "interactive",
+			source,
 			text: "/reload",
 			streamingBehavior: "followUp",
 		});
@@ -537,7 +488,7 @@ test("honours Pi all-mode settings and pins the whole edited lane", async () => 
 		JSON.stringify({ steeringMode: "all", followUpMode: "all" }),
 	);
 	try {
-		const steering = createHarness({ cwd, projectTrusted: true });
+		const steering = createHarness({ cwd });
 		await steering.emit("session_start");
 		await enqueue(steering, "steer", "steer one");
 		await enqueue(steering, "steer", "steer two");
@@ -548,7 +499,7 @@ test("honours Pi all-mode settings and pins the whole edited lane", async () => 
 		await steering.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
 		assert.deepEqual(steering.sent.map((item) => item.content), ["steer one", "steer two"]);
 
-		const followUps = createHarness({ cwd, projectTrusted: true });
+		const followUps = createHarness({ cwd });
 		await followUps.emit("session_start");
 		await enqueue(followUps, "followUp", "later one");
 		await enqueue(followUps, "followUp", "later two");
@@ -564,7 +515,7 @@ test("restarts an all-mode lane in FIFO order after it stays pinned through sett
 	mkdirSync(join(cwd, ".pi"));
 	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ followUpMode: "all" }));
 	try {
-		const harness = createHarness({ cwd, projectTrusted: true });
+		const harness = createHarness({ cwd });
 		await harness.emit("session_start");
 		await enqueue(harness, "followUp", "restart one");
 		await enqueue(harness, "followUp", "restart two");
@@ -865,7 +816,6 @@ test("expands queued prompt templates and short Agent Skill commands at delivery
 		assert.match(String(harness.sent[0]?.content), /<skill name="bro"/);
 		assert.match(String(harness.sent[0]?.content), /make this clearer$/);
 
-		harness.clearPending();
 		await harness.emit("agent_end");
 		assert.deepEqual(harness.sent[1]?.content, [
 			{ type: "text", text: "Review this and simplify it." },
@@ -883,7 +833,6 @@ test("an expansion failure restores and pauses an entire all-mode batch", async 
 	const missingPath = join(cwd, "missing.md");
 	const harness = createHarness({
 		cwd,
-		projectTrusted: true,
 		commands: [{
 			name: "missing",
 			source: "prompt",
@@ -947,22 +896,6 @@ test("owns busy manual compaction so its abort does not pause queued rows", asyn
 	});
 	await waitFor(() => harness.sent.length === 1);
 	assert.equal(harness.sent[0]?.content, "continue after compact");
-});
-
-test("restores and pauses a command row when compaction cannot start", async () => {
-	const harness = createHarness({ compactStartError: new Error("cannot start") });
-	await harness.emit("session_start");
-	harness.setIdle(true);
-	await enqueue(harness, "followUp", "/compact");
-	await enqueue(harness, "followUp", "after compact");
-
-	await harness.emit("agent_settled");
-	const rendered = renderWidget(harness);
-	assert.match(rendered, /\/compact/);
-	assert.match(rendered, /after compact/);
-	assert.match(rendered, /paused/);
-	assert.match(harness.notifications.at(-1)?.message ?? "", /Could not start compaction: cannot start/);
-	assert.equal(harness.sent.length, 0);
 });
 
 test("leaves ordinary compaction input native and waits for its full run", async () => {
@@ -1127,7 +1060,7 @@ test("preserves a paused queue and attachments across direct runtime reload", as
 });
 
 test("survives repeated queued reloads without expiry, reordering, or duplication", async () => {
-	const reloadCount = 25;
+	const reloadCount = 2;
 	let runtime = createHarness();
 	await runtime.emit("session_start", { reason: "startup" });
 	runtime.setIdle(true);

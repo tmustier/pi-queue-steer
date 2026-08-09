@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Simplify dispatch around Pi's fire-and-forget message handoff and callback-based compaction APIs, while preserving restoration for prompt and Skill expansion failures.
+- Keep validation documentation focused on reproducible commands and generated evidence rather than stale run output.
+
 ## 0.2.0 - 2026-08-09
 
 ### Added
