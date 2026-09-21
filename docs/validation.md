@@ -23,13 +23,13 @@ npm update --ignore-scripts \
 npm run ci
 ```
 
-The suite covers queue/edit invariants, command classification, images, one-at-a-time and all-mode delivery, synchronous partial handoff restoration, non-TUI pass-through, prompt and Skill expansion, manual compaction success/failure, automatic overflow compaction, retry ordering, repeated reload restoration, and compaction/native-input ordering.
+The suite covers queue/edit invariants, command classification, images, one-at-a-time and all-mode delivery, synchronous partial handoff restoration, non-TUI pass-through, prompt and Skill expansion, manual compaction success/failure, automatic overflow compaction, retry ordering, settled-handler launch ordering, repeated reload restoration, and compaction/native-input ordering.
 
-Latest result with Pi 0.84.1: 81 tests passed.
+Latest result with Pi 0.87.0: 82 tests passed.
 
 ## Real TUI evidence
 
-`test/tui-evidence.sh` starts the real Pi 0.84.1 TUI under tmux with a deterministic faux provider. It uses actual terminal key sequences, public compaction lifecycle events, public provider registration, actual runtime reloads, and Pi's real native compaction queue.
+`test/tui-evidence.sh` starts the real resolved Pi TUI under tmux with a deterministic faux provider. It uses actual terminal key sequences, public compaction lifecycle events, public provider registration, actual runtime reloads, and Pi's real native compaction queue.
 
 Run:
 
@@ -39,7 +39,7 @@ Run:
 
 The output directory contains plain terminal captures, provider-call logs, lifecycle-event logs, and runtime-initialization logs. Run it immediately before review so `summary.txt` records the exact Pi version, commit and working-tree state under test. A release evidence run should report `working tree: clean`.
 
-The latest complete run reported:
+The full harness passed against Pi 0.87.0 for this compatibility update. The latest retained clean release-evidence run reported:
 
 ```text
 pi: 0.84.1
