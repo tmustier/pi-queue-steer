@@ -115,6 +115,7 @@ function userTexts(session: AgentSession): string[] {
 }
 
 async function createIntegrationHarness(options: {
+	compactionEnabled?: boolean;
 	contextWindow?: number;
 	maxTokens?: number;
 	extraExtensions?: ExtensionFactory[];
@@ -132,7 +133,7 @@ async function createIntegrationHarness(options: {
 	});
 	const model = faux.getModel();
 	const settingsManager = SettingsManager.inMemory({
-		compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 },
+		compaction: { enabled: options.compactionEnabled ?? true, keepRecentTokens: 1, reserveTokens: 0 },
 		retry: options.retryEnabled
 			? { enabled: true, maxRetries: 2, baseDelayMs: 1 }
 			: { enabled: false },
@@ -316,6 +317,65 @@ test("real retry finishes before the extension releases its queued follow-up", a
 		assert.equal(userTexts(harness.session).filter((text) => text === "after retry").length, 1);
 		assert.equal(harness.session.getLastAssistantText(), "queued follow-up succeeded");
 	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("Pi 0.87 finishes settled handlers before starting queue-steer's requested run", async () => {
+	const trace: string[] = [];
+	let enterFirstSettled: (() => void) | undefined;
+	let releaseFirstSettled: (() => void) | undefined;
+	const firstSettledEntered = new Promise<void>((resolve) => {
+		enterFirstSettled = resolve;
+	});
+	const firstSettledGate = new Promise<void>((resolve) => {
+		releaseFirstSettled = resolve;
+	});
+	let first = true;
+	const observer: ExtensionFactory = (pi) => {
+		pi.on("agent_settled", async () => {
+			trace.push("settled:start");
+			if (first) {
+				first = false;
+				enterFirstSettled?.();
+				await firstSettledGate;
+			}
+			trace.push("settled:end");
+		});
+	};
+	const harness = await createIntegrationHarness({
+		compactionEnabled: false,
+		extraExtensions: [observer],
+	});
+	harness.session.subscribe((event) => {
+		if (event.type === "agent_start") trace.push("start");
+	});
+	const active = gatedResponse("full-length response", { stopReason: "length" });
+	harness.faux.setResponses([active.step, fauxAssistantMessage("queued response")]);
+	const activeStarted = nextAgentStart(harness.session);
+	const prompt = harness.session.prompt("active prompt");
+	try {
+		await within(activeStarted, () => trace.join(", "));
+		await harness.session.prompt("queued after length stop", { streamingBehavior: "followUp" });
+		active.release();
+		await within(firstSettledEntered, () => trace.join(", "));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(trace, ["start", "settled:start"]);
+
+		releaseFirstSettled?.();
+		await within(prompt, () => trace.join(", "));
+		assert.deepEqual(trace, [
+			"start",
+			"settled:start",
+			"settled:end",
+			"start",
+			"settled:start",
+			"settled:end",
+		]);
+	} finally {
+		active.release();
+		releaseFirstSettled?.();
+		await prompt.catch(() => undefined);
 		await harness.cleanup();
 	}
 });
