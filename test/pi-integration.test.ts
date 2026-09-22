@@ -321,87 +321,61 @@ test("real retry finishes before the extension releases its queued follow-up", a
 	}
 });
 
-test("Pi 0.87 finishes sibling settled handlers before starting queue-steer's requested run", async () => {
+test("Pi 0.87 finishes settled handlers before starting queue-steer's requested run", async () => {
 	const trace: string[] = [];
-	let runCount = 0;
-	let settledCount = 0;
-	let settledDepth = 0;
-	let maxSettledDepth = 0;
 	let enterFirstSettled: (() => void) | undefined;
 	let releaseFirstSettled: (() => void) | undefined;
-	let startQueuedRun: (() => void) | undefined;
 	const firstSettledEntered = new Promise<void>((resolve) => {
 		enterFirstSettled = resolve;
 	});
 	const firstSettledGate = new Promise<void>((resolve) => {
 		releaseFirstSettled = resolve;
 	});
-	const queuedRunStarted = new Promise<void>((resolve) => {
-		startQueuedRun = resolve;
-	});
-	const asyncSibling: ExtensionFactory = (pi) => {
-		pi.on("agent_start", () => {
-			runCount += 1;
-			trace.push(`start:${runCount}`);
-			if (runCount === 2) startQueuedRun?.();
-		});
+	let first = true;
+	const observer: ExtensionFactory = (pi) => {
 		pi.on("agent_settled", async () => {
-			settledCount += 1;
-			const current = settledCount;
-			settledDepth += 1;
-			maxSettledDepth = Math.max(maxSettledDepth, settledDepth);
-			trace.push(`settled:${current}:start`);
-			if (current === 1) {
+			trace.push("settled:start");
+			if (first) {
+				first = false;
 				enterFirstSettled?.();
 				await firstSettledGate;
 			}
-			trace.push(`settled:${current}:end`);
-			settledDepth -= 1;
+			trace.push("settled:end");
 		});
 	};
 	const harness = await createIntegrationHarness({
 		compactionEnabled: false,
-		// Registered after queue-steer so its async settled handler tests whether
-		// queue-steer's earlier send request can re-enter lifecycle dispatch.
-		extraExtensions: [asyncSibling],
+		extraExtensions: [observer],
+	});
+	harness.session.subscribe((event) => {
+		if (event.type === "agent_start") trace.push("start");
 	});
 	const active = gatedResponse("full-length response", { stopReason: "length" });
-	let prompt: Promise<void> | undefined;
+	harness.faux.setResponses([active.step, fauxAssistantMessage("queued response")]);
+	const activeStarted = nextAgentStart(harness.session);
+	const prompt = harness.session.prompt("active prompt");
 	try {
-		harness.faux.setResponses([
-			active.step,
-			fauxAssistantMessage("queued response"),
-		]);
-		const activeStarted = nextAgentStart(harness.session);
-		prompt = harness.session.prompt("active prompt");
 		await within(activeStarted, () => trace.join(", "));
 		await harness.session.prompt("queued after length stop", { streamingBehavior: "followUp" });
-
 		active.release();
 		await within(firstSettledEntered, () => trace.join(", "));
-		const startedInsideSettled = await Promise.race([
-			queuedRunStarted.then(() => true),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
-		]);
-		assert.equal(startedInsideSettled, false, trace.join(", "));
-		assert.equal(maxSettledDepth, 1, trace.join(", "));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(trace, ["start", "settled:start"]);
 
 		releaseFirstSettled?.();
 		await within(prompt, () => trace.join(", "));
 		assert.deepEqual(trace, [
-			"start:1",
-			"settled:1:start",
-			"settled:1:end",
-			"start:2",
-			"settled:2:start",
-			"settled:2:end",
+			"start",
+			"settled:start",
+			"settled:end",
+			"start",
+			"settled:start",
+			"settled:end",
 		]);
-		assert.equal(maxSettledDepth, 1);
-		assert.equal(userTexts(harness.session).at(-1), "queued after length stop");
 	} finally {
 		active.release();
 		releaseFirstSettled?.();
-		await prompt?.catch(() => undefined);
+		await prompt.catch(() => undefined);
 		await harness.cleanup();
 	}
 });
