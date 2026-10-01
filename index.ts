@@ -353,7 +353,8 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 	// A command row at the lane head holds everything behind it (FIFO) until the
 	// agent settles and dispatchFromIdle executes it.
 	const takeLaneBatch = (lane: QueueLane): QueuedMessage<ImageContent>[] => {
-		if (paused || blockingActivity || queue.laneLength(lane) === 0 || laneIsHeld(lane)) return [];
+		if (paused || blockingActivity || (nativeCompactionInputQueued && !nativeCompactionTurnStarted)
+			|| queue.laneLength(lane) === 0 || laneIsHeld(lane)) return [];
 		const isMessage = (item: QueuedMessage<ImageContent>) => itemCommand(item) === undefined;
 		if (queueModes()[lane] === "all") return queue.shiftWhile(lane, isMessage);
 		const head = queue.peek(lane);
@@ -470,7 +471,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 
 	const dispatchFromIdle = (ctx: ExtensionContext): boolean => {
 		activeContext = ctx;
-		if (blockingActivity) {
+		if (blockingActivity || nativeCompactionInputQueued) {
 			renderQueue(ctx);
 			return false;
 		}
@@ -506,6 +507,22 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			nativeCompactionTurnStarted = false;
 			const current = activeContext ?? ctx;
 			renderQueue(current);
+			if (!paused && !editSession && queue.length > 0 && current.isIdle()) dispatchFromIdle(current);
+		}, 0);
+	};
+
+	const finishAutomaticCompaction = (ctx: ExtensionContext): void => {
+		if (blockingActivity !== "auto-compact") return;
+		// Automatic compaction can finish between tool turns, long before the
+		// run settles. Release message delivery now, not at agent_settled.
+		blockingActivity = undefined;
+		renderQueue(ctx);
+		if (compactionFinishTimer) clearTimeout(compactionFinishTimer);
+		compactionFinishTimer = setTimeout(() => {
+			compactionFinishTimer = undefined;
+			const current = activeContext ?? ctx;
+			// Native input may still be in asynchronous preflight. dispatchFromIdle
+			// keeps command rows behind that input until its run has settled.
 			if (!paused && !editSession && queue.length > 0 && current.isIdle()) dispatchFromIdle(current);
 		}, 0);
 	};
@@ -852,9 +869,12 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		renderQueue(ctx);
 	});
 
+	pi.on("session_compact", (_event, ctx) => finishAutomaticCompaction(ctx));
+	pi.on("session_compact_failed", (_event, ctx) => finishAutomaticCompaction(ctx));
+
 	pi.on("turn_start", (_event, ctx) => {
 		activeContext = ctx;
-		if (isCompacting() && nativeCompactionInputQueued) nativeCompactionTurnStarted = true;
+		if (nativeCompactionInputQueued) nativeCompactionTurnStarted = true;
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
@@ -907,6 +927,12 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 			deferCompactionFinish(ctx, activity);
 			return;
 		}
+		if (nativeCompactionInputQueued && !nativeCompactionTurnStarted) {
+			renderQueue(ctx);
+			return;
+		}
+		nativeCompactionInputQueued = false;
+		nativeCompactionTurnStarted = false;
 		renderQueue(ctx);
 		if (!paused && !editSession && queue.length > 0 && ctx.isIdle() && !blockingActivity) dispatchFromIdle(ctx);
 	});

@@ -62,6 +62,7 @@ The extension follows your configured Pi action bindings. These are the default 
 The extension keeps Pi’s 2 delivery classes:
 
 - steering reaches the current run at Pi’s next safe turn boundary
+- automatic compaction holds delivery only while compaction is active; steering resumes at the next boundary even if the run continues making tool calls
 - follow-ups wait until the run finishes
 - the blue steering box remains above the yellow follow-up box
 - each lane keeps its own first-in, first-out order
