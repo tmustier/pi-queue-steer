@@ -30,7 +30,7 @@ pi install git:github.com/tmustier/pi-queue-steer
 Pin the current release:
 
 ```bash
-pi install git:github.com/tmustier/pi-queue-steer@v0.2.1
+pi install git:github.com/tmustier/pi-queue-steer@v0.2.2
 ```
 
 Then start a new Pi session or run `/reload`.

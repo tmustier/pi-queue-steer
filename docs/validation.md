@@ -25,7 +25,19 @@ npm run ci
 
 The suite covers queue/edit invariants, command classification, images, one-at-a-time and all-mode delivery, synchronous partial handoff restoration, non-TUI pass-through, prompt and Skill expansion, manual compaction success/failure, automatic overflow compaction, retry ordering, settled-handler launch ordering, repeated reload restoration, and compaction/native-input ordering.
 
-Release 0.2.1: 84 tests passed on both Pi 0.87.0 (the lockfile) and Pi 0.99.2 (the current installed release).
+Release 0.2.2: 86 tests passed on both Pi 0.87.0 (the lockfile) and Pi 1.0.0 (the current installed release).
+
+Release 0.2.1: 84 tests passed on both Pi 0.87.0 and Pi 0.99.2.
+
+## Embedded working status
+
+Validated on 1 October 2026 at `3cbd2b57ac4d78efbeb60c6b579c9a8efc7a95c9` for release 0.2.2.
+
+A scratch Pi 1.0.0 TUI used `openai/gpt-6-astra` at low thinking with only this extension loaded. The prompt asked the model to run `sleep 20 && echo done` with bash. While the tool ran, the TUI queued a follow-up. Terminal captures showed:
+
+- `── ⠸ Working ───` in the editor's top border below the queue, where 0.2.1 showed `⠸ Working` above the queue
+- the same border line below the queue while the queued row was edited inline, with no stray border when editing a paused queue at idle
+- the follow-up delivered once after the run
 
 ## Automatic-compaction steering regression
 
@@ -67,7 +79,7 @@ Run:
 
 The output directory contains plain terminal captures, provider-call logs, lifecycle-event logs, and runtime-initialization logs. Run it immediately before review so `summary.txt` records the exact Pi version, commit and working-tree state under test. A release evidence run should report `working tree: clean`.
 
-The full harness passed against Pi 0.87.0 and 0.99.2 for release 0.2.1. The historical 0.2.0 release-evidence run reported:
+The full harness passed against Pi 0.87.0 and 1.0.0 for release 0.2.2, and against Pi 0.87.0 and 0.99.2 for release 0.2.1. The historical 0.2.0 release-evidence run reported:
 
 ```text
 pi: 0.84.1
