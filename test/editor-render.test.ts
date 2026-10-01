@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractInlineEditorLines, stripAnsi } from "../editor-render.ts";
+import { extractEmbeddedStatusBorder, extractInlineEditorLines, stripAnsi } from "../editor-render.ts";
 
 test("removes the stock editor frame without disturbing its cursor", () => {
 	const cursorMarker = "\x1b_pi:c\x07";
@@ -64,4 +64,19 @@ test("does not mistake short horizontal user text for the bottom frame", () => {
 
 test("leaves frameless custom editor output intact", () => {
 	assert.deepEqual(extractInlineEditorLines(["custom editor"]), ["custom editor"]);
+});
+
+test("keeps an embedded working status border while a row is edited inline", () => {
+	const lines = [
+		"\x1b[33m── \x1b[36m⠸ Working\x1b[33m ──────\x1b[39m",
+		"draft       ",
+		"\x1b[33m────────────\x1b[39m",
+	];
+
+	assert.deepEqual(extractEmbeddedStatusBorder(lines), [lines[0]]);
+});
+
+test("drops plain and overflow-only editor borders while a row is edited inline", () => {
+	assert.deepEqual(extractEmbeddedStatusBorder(["────────────", "draft", "────────────"]), []);
+	assert.deepEqual(extractEmbeddedStatusBorder(["─── ↑ 3 more ───", "draft", "────────────"]), []);
 });

@@ -10,7 +10,7 @@ import {
 	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, type Component, type EditorComponent } from "@earendil-works/pi-tui";
-import { extractInlineEditorLines } from "./editor-render.ts";
+import { extractEmbeddedStatusBorder, extractInlineEditorLines } from "./editor-render.ts";
 import { expandQueuedInput, queuesDuringCompaction } from "./queued-input.ts";
 import {
 	DeliveryQueue,
@@ -604,8 +604,11 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 				}
 			};
 
+			const embedsWorkingStatus = "embedWorkingStatus" in editor && editor.embedWorkingStatus === true;
 			editor.render = (width: number): string[] => {
-				if (editSession && !renderingInline) return [];
+				if (editSession && !renderingInline) {
+					return embedsWorkingStatus ? extractEmbeddedStatusBorder(renderEditor(width)) : [];
+				}
 				return renderEditor(width);
 			};
 
