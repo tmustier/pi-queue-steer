@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	fauxAssistantMessage,
+	fauxToolCall,
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/compat";
@@ -115,10 +116,13 @@ function userTexts(session: AgentSession): string[] {
 }
 
 async function createIntegrationHarness(options: {
+	compactionEnabled?: boolean;
 	contextWindow?: number;
 	maxTokens?: number;
 	extraExtensions?: ExtensionFactory[];
 	retryEnabled?: boolean;
+	reserveTokens?: number;
+	tools?: string[];
 } = {}): Promise<IntegrationHarness> {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-queue-integration-"));
 	const agentDir = join(cwd, "agent");
@@ -132,7 +136,7 @@ async function createIntegrationHarness(options: {
 	});
 	const model = faux.getModel();
 	const settingsManager = SettingsManager.inMemory({
-		compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 },
+		compaction: { enabled: options.compactionEnabled ?? true, keepRecentTokens: 1, reserveTokens: options.reserveTokens ?? 0 },
 		retry: options.retryEnabled
 			? { enabled: true, maxRetries: 2, baseDelayMs: 1 }
 			: { enabled: false },
@@ -175,7 +179,8 @@ async function createIntegrationHarness(options: {
 		settingsManager,
 		sessionManager,
 		resourceLoader,
-		noTools: "all",
+		tools: options.tools,
+		noTools: options.tools ? undefined : "all",
 	});
 	await session.bindExtensions({ mode: "tui" });
 	return {
@@ -192,24 +197,20 @@ async function createIntegrationHarness(options: {
 }
 
 function gatedResponse(
-	content: string,
+	content: Parameters<typeof fauxAssistantMessage>[0],
 	options?: Parameters<typeof fauxAssistantMessage>[1],
 ): {
 	step: () => Promise<ReturnType<typeof fauxAssistantMessage>>;
 	release(): void;
 } {
-	let releaseGate: (() => void) | undefined;
-	const gate = new Promise<void>((resolve) => {
-		releaseGate = resolve;
-	});
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
 	return {
 		step: async () => {
 			await gate;
 			return fauxAssistantMessage(content, options);
 		},
-		release() {
-			releaseGate?.();
-		},
+		release,
 	};
 }
 
@@ -319,6 +320,138 @@ test("real retry finishes before the extension releases its queued follow-up", a
 		await harness.cleanup();
 	}
 });
+
+test("Pi 0.87 finishes settled handlers before starting queue-steer's requested run", async () => {
+	const trace: string[] = [];
+	let enterFirstSettled: (() => void) | undefined;
+	let releaseFirstSettled: (() => void) | undefined;
+	const firstSettledEntered = new Promise<void>((resolve) => {
+		enterFirstSettled = resolve;
+	});
+	const firstSettledGate = new Promise<void>((resolve) => {
+		releaseFirstSettled = resolve;
+	});
+	let first = true;
+	const observer: ExtensionFactory = (pi) => {
+		pi.on("agent_settled", async () => {
+			trace.push("settled:start");
+			if (first) {
+				first = false;
+				enterFirstSettled?.();
+				await firstSettledGate;
+			}
+			trace.push("settled:end");
+		});
+	};
+	const harness = await createIntegrationHarness({
+		compactionEnabled: false,
+		extraExtensions: [observer],
+	});
+	harness.session.subscribe((event) => {
+		if (event.type === "agent_start") trace.push("start");
+	});
+	const active = gatedResponse("full-length response", { stopReason: "length" });
+	harness.faux.setResponses([active.step, fauxAssistantMessage("queued response")]);
+	const activeStarted = nextAgentStart(harness.session);
+	const prompt = harness.session.prompt("active prompt");
+	try {
+		await within(activeStarted, () => trace.join(", "));
+		await harness.session.prompt("queued after length stop", { streamingBehavior: "followUp" });
+		active.release();
+		await within(firstSettledEntered, () => trace.join(", "));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(trace, ["start", "settled:start"]);
+
+		releaseFirstSettled?.();
+		await within(prompt, () => trace.join(", "));
+		assert.deepEqual(trace, [
+			"start",
+			"settled:start",
+			"settled:end",
+			"start",
+			"settled:start",
+			"settled:end",
+		]);
+	} finally {
+		active.release();
+		releaseFirstSettled?.();
+		await prompt.catch(() => undefined);
+		await harness.cleanup();
+	}
+});
+
+for (const outcome of ["success", "failure", "cancelled"] as const) {
+	test(`steering reaches the continuing tool run after threshold compaction ${outcome}`, async () => {
+		let enterResumed!: () => void;
+		const resumedEntered = new Promise<void>((resolve) => { enterResumed = resolve; });
+		const resumed = gatedResponse(
+			[fauxToolCall("bash", { command: "printf resumed-tool", timeout: 5 })],
+			{ stopReason: "toolUse" },
+		);
+		const summaryExtension: ExtensionFactory = (pi) => {
+			let first = true;
+			pi.on("session_before_compact", (event) => {
+				if (outcome === "cancelled") return { cancel: true };
+				if (outcome === "failure" && first) {
+					first = false;
+					return;
+				}
+				return {
+					compaction: {
+						summary: "short integration summary",
+						firstKeptEntryId: event.preparation.firstKeptEntryId,
+						tokensBefore: event.preparation.tokensBefore,
+					},
+				};
+			});
+		};
+		const harness = await createIntegrationHarness({
+			contextWindow: 100_000,
+			// agent-default (not a user rule): 2026-10-01, small test threshold.
+			reserveTokens: 99_000,
+			tools: ["bash"],
+			extraExtensions: [summaryExtension],
+		});
+		const trace: string[] = [];
+		harness.session.subscribe((event) => {
+			trace.push(event.type);
+		});
+		harness.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "printf initial-tool", timeout: 5 })], { stopReason: "toolUse" }),
+			...(outcome === "failure" ? [() => { throw new Error("threshold summary failed"); }] : []),
+			() => {
+				enterResumed();
+				return resumed.step();
+			},
+			() => {
+				assert.equal(userTexts(harness.session).at(-1), "steer after threshold");
+				assert.equal(trace.includes("agent_end"), false);
+				return fauxAssistantMessage("steering handled inside original run");
+			},
+		]);
+		const compactionEnded = nextCompactionEnd(harness.session);
+		const prompt = harness.session.prompt("initial context ".repeat(1_000));
+		try {
+			await within(resumedEntered, () => trace.join(", "));
+			const compaction = await within(compactionEnded, () => trace.join(", "));
+			assert.equal(compaction.reason, "threshold");
+			assert.equal(compaction.aborted, outcome === "cancelled");
+			if (outcome === "failure") assert.match(compaction.errorMessage ?? "", /threshold summary failed/);
+			assert.equal(!!compaction.result, outcome === "success");
+			assert.equal(trace.includes("agent_settled"), false);
+			await harness.session.prompt("steer after threshold", { streamingBehavior: "steer" });
+			resumed.release();
+			await within(prompt, () => trace.join(", "));
+			assert.equal(userTexts(harness.session).filter((text) => text === "steer after threshold").length, 1);
+			assert.equal(harness.session.getLastAssistantText(), "steering handled inside original run");
+			assert.equal(trace.filter((type) => type === "agent_start").length, 1);
+		} finally {
+			resumed.release();
+			await prompt.catch(() => undefined);
+			await harness.cleanup();
+		}
+	});
+}
 
 test("real public prompt path triggers overflow compaction and preserves a queued follow-up", async () => {
 	const summaryExtension: ExtensionFactory = (pi) => {

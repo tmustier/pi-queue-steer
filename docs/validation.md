@@ -23,13 +23,41 @@ npm update --ignore-scripts \
 npm run ci
 ```
 
-The suite covers queue/edit invariants, command classification, images, one-at-a-time and all-mode delivery, synchronous partial handoff restoration, non-TUI pass-through, prompt and Skill expansion, manual compaction success/failure, automatic overflow compaction, retry ordering, repeated reload restoration, and compaction/native-input ordering.
+The suite covers queue/edit invariants, command classification, images, one-at-a-time and all-mode delivery, synchronous partial handoff restoration, non-TUI pass-through, prompt and Skill expansion, manual compaction success/failure, automatic overflow compaction, retry ordering, settled-handler launch ordering, repeated reload restoration, and compaction/native-input ordering.
 
-Latest result with Pi 0.84.1: 81 tests passed.
+Release 0.2.1: 84 tests passed on both Pi 0.87.0 (the lockfile) and Pi 0.99.2 (the current installed release).
+
+## Automatic-compaction steering regression
+
+Validated on 1 October 2026 at `afd4db006d72792d5605a1d026e809f3018ff975` for release 0.2.1.
+
+The 3 regressions use real `AgentSession` scheduling and bash tools to exercise threshold compaction success, failure and cancellation. They queue steering while the resumed assistant response waits, then check delivery before `agent_end`, in the original run, exactly once. All 3 fail against the original `91e3a5f` implementation.
+
+The release review replaced fabricated completion events with these integration tests. It also removed an impossible synchronous compaction-start failure test. The full suite has 84 passing tests on Pi 0.87.0 and 0.99.2. The full TUI harness passed on both versions at the tested revision with a clean working tree.
+
+### Live-model proof
+
+A scratch Pi 0.99.2 TUI used `openai/gpt-6.1-sol` at medium thinking, the release extension and a `queue_probe` tool. Normal Pi summarization compacted between tool turns. Scratch settings were `reserveTokens: 266000` and `keepRecentTokens: 200` (agent defaults for this test, not user rules). Production settings were unchanged.
+
+Prompt:
+
+```text
+This is an isolated queue-steer regression test. Use queue_probe only. Call inflate first, then call hold in a separate later assistant turn, then call record with token ORIGINAL in a later turn, then finish. Never batch phases in one assistant turn. The filler is disposable and can be summarized very briefly. If a later steering message changes the token, record its token instead. Do not skip phases or ask questions.
+```
+
+The model called `inflate`, Pi compacted, and the model called `hold`. While that tool waited, the TUI queued:
+
+```text
+Steering update: when the hold tool returns, call queue_probe record with token STEERED instead of ORIGINAL, then finish.
+```
+
+After release, the model called `record` with `token: "STEERED"` before its final response. Independent file, transcript and event-log checks confirmed one steering user message, one agent run and recording before `agent_end`. Terminal captures showed the waiting queue and the successful tool result.
+
+Live-model coverage is successful threshold compaction and mid-run steering. Failure and cancellation use real-session deterministic tests. Native-input ordering uses the real TUI harness. Later asynchronous send rejection remains outside Pi's public acknowledgement contract.
 
 ## Real TUI evidence
 
-`test/tui-evidence.sh` starts the real Pi 0.84.1 TUI under tmux with a deterministic faux provider. It uses actual terminal key sequences, public compaction lifecycle events, public provider registration, actual runtime reloads, and Pi's real native compaction queue.
+`test/tui-evidence.sh` starts the real resolved Pi TUI under tmux with a deterministic faux provider. It uses actual terminal key sequences, public compaction lifecycle events, public provider registration, actual runtime reloads, and Pi's real native compaction queue.
 
 Run:
 
@@ -39,7 +67,7 @@ Run:
 
 The output directory contains plain terminal captures, provider-call logs, lifecycle-event logs, and runtime-initialization logs. Run it immediately before review so `summary.txt` records the exact Pi version, commit and working-tree state under test. A release evidence run should report `working tree: clean`.
 
-The latest complete run reported:
+The full harness passed against Pi 0.87.0 and 0.99.2 for release 0.2.1. The historical 0.2.0 release-evidence run reported:
 
 ```text
 pi: 0.84.1
