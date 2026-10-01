@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-10-01
+
+### Fixed
+
+- Keep Pi's working, compaction and retry spinners in the editor border instead of above the input when queue-steer installs the editor ([#11](https://github.com/tmustier/pi-queue-steer/pull/11) by [@VinhLe1410](https://github.com/VinhLe1410)).
+- Keep the embedded spinner visible below the queue while a queued row is edited inline.
+
 ## 0.2.1 - 2026-10-01
 
 ### Fixed
