@@ -249,15 +249,14 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 	let settingsManager: SettingsManager | undefined;
 	let blockingActivity: "compact" | "auto-compact" | "reload" | undefined;
 	let compactionFinishTimer: ReturnType<typeof setTimeout> | undefined;
-	let nativeCompactionInputQueued = false;
-	let nativeCompactionTurnStarted = false;
+	let nativeCompactionInput: "none" | "pending" | "running" = "none";
 	const isCompacting = (): boolean => blockingActivity === "compact" || blockingActivity === "auto-compact";
 	const trackNativeCompactionSubmission = (
 		text: string,
 		behavior: "submit" | "followUp" = "submit",
 	): void => {
 		if (isCompacting() && queuesDuringCompaction(text, pi.getCommands(), behavior)) {
-			nativeCompactionInputQueued = true;
+			nativeCompactionInput = "pending";
 		}
 	};
 	// Pi's own editor submit handler, captured by the submit guard. Replaying text
@@ -349,25 +348,21 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		);
 	};
 
-	// Message rows only; command rows never dispatch at active-run boundaries.
-	// A command row at the lane head holds everything behind it (FIFO) until the
-	// agent settles and dispatchFromIdle executes it.
-	const takeLaneBatch = (lane: QueueLane): QueuedMessage<ImageContent>[] => {
-		if (paused || blockingActivity || queue.laneLength(lane) === 0 || laneIsHeld(lane)) return [];
-		const isMessage = (item: QueuedMessage<ImageContent>) => itemCommand(item) === undefined;
-		if (queueModes()[lane] === "all") return queue.shiftWhile(lane, isMessage);
-		const head = queue.peek(lane);
-		if (!head || !isMessage(head)) return [];
-		const item = queue.shift(lane);
-		return item ? [item] : [];
-	};
-
-	const deliverBatchToNativeQueue = async (
-		ctx: ExtensionContext,
-		lane: QueueLane,
-		items: QueuedMessage<ImageContent>[],
-	): Promise<boolean> => {
-		if (items.length === 0) return false;
+	const dispatchLaneAtBoundary = (ctx: ExtensionContext, lane: QueueLane): boolean => {
+		activeContext = ctx;
+		if (paused || blockingActivity || nativeCompactionInput === "pending" || laneIsHeld(lane)) {
+			renderQueue(ctx);
+			return false;
+		}
+		const mode = queueModes()[lane];
+		const headId = queue.peek(lane)?.id;
+		const items = queue.shiftWhile(lane, (item) => (
+			!itemCommand(item) && (mode === "all" || item.id === headId)
+		));
+		if (items.length === 0) {
+			renderQueue(ctx);
+			return false;
+		}
 		let prepared: QueuedMessage<ImageContent>[];
 		try {
 			const commands = pi.getCommands();
@@ -399,16 +394,6 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const dispatchLaneAtBoundary = async (ctx: ExtensionContext, lane: QueueLane): Promise<boolean> => {
-		activeContext = ctx;
-		const items = takeLaneBatch(lane);
-		if (items.length === 0) {
-			renderQueue(ctx);
-			return false;
-		}
-		return deliverBatchToNativeQueue(ctx, lane, items);
-	};
-
 	// Execute the command row at the lane head. Only called when the agent is idle.
 	const executeCommandRow = (ctx: ExtensionContext, lane: QueueLane): boolean => {
 		const next = queue.peek(lane);
@@ -426,11 +411,8 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		paused = false;
 		renderQueue(ctx);
 		if (command.kind === "compact") {
-			if (startCompaction(ctx, command.instructions)) return true;
-			queue.prepend(next);
-			paused = true;
-			renderQueue(ctx);
-			return false;
+			startCompaction(ctx, command.instructions);
+			return true;
 		}
 		blockingActivity = "reload";
 		// Defer so the extension runtime is never torn down from inside this handler.
@@ -470,7 +452,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 
 	const dispatchFromIdle = (ctx: ExtensionContext): boolean => {
 		activeContext = ctx;
-		if (blockingActivity) {
+		if (blockingActivity || nativeCompactionInput !== "none") {
 			renderQueue(ctx);
 			return false;
 		}
@@ -488,51 +470,26 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		return sendHeadMessage(ctx, lane);
 	};
 
-	const deferCompactionFinish = (
-		ctx: ExtensionContext,
-		activity: "compact" | "auto-compact",
-	): void => {
+	const finishCompaction = (ctx: ExtensionContext): void => {
+		if (!isCompacting()) return;
+		blockingActivity = undefined;
+		renderQueue(ctx);
+		if (compactionFinishTimer) clearTimeout(compactionFinishTimer);
 		compactionFinishTimer = setTimeout(() => {
 			compactionFinishTimer = undefined;
-			if (blockingActivity !== activity) return;
-			// Pi flushes ordinary TUI submissions after compaction without
-			// awaiting prompt preflight. Keep command rows behind that native run.
-			if (nativeCompactionInputQueued) {
-				renderQueue(activeContext ?? ctx);
-				return;
-			}
-			blockingActivity = undefined;
-			nativeCompactionInputQueued = false;
-			nativeCompactionTurnStarted = false;
 			const current = activeContext ?? ctx;
-			renderQueue(current);
-			if (!paused && !editSession && queue.length > 0 && current.isIdle()) dispatchFromIdle(current);
+			if (!paused && !editSession && current.isIdle()) dispatchFromIdle(current);
 		}, 0);
 	};
 
-	const startCompaction = (ctx: ExtensionContext, instructions: string | undefined): boolean => {
+	const startCompaction = (ctx: ExtensionContext, instructions: string | undefined): void => {
 		blockingActivity = "compact";
-		nativeCompactionInputQueued = false;
-		nativeCompactionTurnStarted = false;
-		try {
-			ctx.compact({
-				customInstructions: instructions,
-				onComplete: () => {
-					if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
-				},
-				onError: () => {
-					if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
-				},
-			});
-			return true;
-		} catch (error) {
-			blockingActivity = undefined;
-			ctx.ui.notify(
-				`Could not start compaction: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-			return false;
-		}
+		nativeCompactionInput = "none";
+		ctx.compact({
+			customInstructions: instructions,
+			onComplete: () => finishCompaction(ctx),
+			onError: () => finishCompaction(ctx),
+		});
 	};
 
 	const deferCommand = (ctx: ExtensionContext, text: string): void => {
@@ -847,14 +804,16 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		activeContext = ctx;
 		if (blockingActivity || event.reason === "manual") return;
 		blockingActivity = "auto-compact";
-		nativeCompactionInputQueued = false;
-		nativeCompactionTurnStarted = false;
+		nativeCompactionInput = "none";
 		renderQueue(ctx);
 	});
 
+	pi.on("session_compact", (_event, ctx) => finishCompaction(ctx));
+	pi.on("session_compact_failed", (_event, ctx) => finishCompaction(ctx));
+
 	pi.on("turn_start", (_event, ctx) => {
 		activeContext = ctx;
-		if (isCompacting() && nativeCompactionInputQueued) nativeCompactionTurnStarted = true;
+		if (nativeCompactionInput === "pending") nativeCompactionInput = "running";
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
@@ -896,19 +855,10 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 
 	pi.on("agent_settled", (_event, ctx) => {
 		activeContext = ctx;
-		if (blockingActivity === "compact" || blockingActivity === "auto-compact") {
-			const activity = blockingActivity;
-			if (nativeCompactionInputQueued && !nativeCompactionTurnStarted) {
-				renderQueue(ctx);
-				return;
-			}
-			// The ordinary post-compaction turn, if any, is now fully settled.
-			nativeCompactionInputQueued = false;
-			deferCompactionFinish(ctx, activity);
-			return;
-		}
+		if (nativeCompactionInput === "pending") return;
+		nativeCompactionInput = "none";
 		renderQueue(ctx);
-		if (!paused && !editSession && queue.length > 0 && ctx.isIdle() && !blockingActivity) dispatchFromIdle(ctx);
+		if (!paused && !editSession && ctx.isIdle()) dispatchFromIdle(ctx);
 	});
 
 	pi.on("session_shutdown", (event) => {
@@ -943,8 +893,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		settingsManager = undefined;
 		paused = false;
 		blockingActivity = undefined;
-		nativeCompactionInputQueued = false;
-		nativeCompactionTurnStarted = false;
+		nativeCompactionInput = "none";
 		tuiSubmit = undefined;
 		queue.clear();
 	});
