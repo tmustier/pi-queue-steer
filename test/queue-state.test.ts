@@ -203,7 +203,6 @@ function createHarness(options: {
 	commands?: SlashCommandInfo[];
 	mode?: "tui" | "rpc" | "json" | "print";
 	sendFailureAt?: number;
-	compactStartError?: Error;
 	autocompleteVisible?: boolean;
 } = {}) {
 	type Handler = (event: any, context: any) => any;
@@ -268,7 +267,6 @@ function createHarness(options: {
 			aborted = true;
 		},
 		compact(compactOptions: CompactOptions = {}) {
-			if (options.compactStartError) throw options.compactStartError;
 			compactCalls.push(compactOptions);
 		},
 	};
@@ -949,22 +947,6 @@ test("owns busy manual compaction so its abort does not pause queued rows", asyn
 	assert.equal(harness.sent[0]?.content, "continue after compact");
 });
 
-test("restores and pauses a command row when compaction cannot start", async () => {
-	const harness = createHarness({ compactStartError: new Error("cannot start") });
-	await harness.emit("session_start");
-	harness.setIdle(true);
-	await enqueue(harness, "followUp", "/compact");
-	await enqueue(harness, "followUp", "after compact");
-
-	await harness.emit("agent_settled");
-	const rendered = renderWidget(harness);
-	assert.match(rendered, /\/compact/);
-	assert.match(rendered, /after compact/);
-	assert.match(rendered, /paused/);
-	assert.match(harness.notifications.at(-1)?.message ?? "", /Could not start compaction: cannot start/);
-	assert.equal(harness.sent.length, 0);
-});
-
 test("leaves ordinary compaction input native and waits for its full run", async () => {
 	const harness = createHarness();
 	await harness.emit("session_start");
@@ -1008,6 +990,7 @@ test("holds a follow-up at a length stop so Pi can decide whether to auto-compac
 	assert.equal(harness.sent.length, 0);
 
 	await harness.emit("session_before_compact", { reason: "overflow" });
+	await harness.emit("session_compact", { reason: "overflow" });
 	harness.setIdle(true);
 	await harness.emit("agent_settled");
 	await waitFor(() => harness.sent.length === 1);
@@ -1026,68 +1009,7 @@ test("releases a length-stop hold at settle when Pi does not compact", async () 
 	assert.equal(harness.sent[0]?.content, "after full-length output");
 });
 
-for (const [outcome, aborted] of [
-	["session_compact", false],
-	["session_compact_failed", false],
-	["session_compact_failed", true],
-] as const) {
-	test(`releases steering at the next turn after automatic compaction: ${outcome}, aborted=${aborted}`, async () => {
-		const harness = createHarness();
-		await harness.emit("session_start");
-		await harness.emit("session_before_compact", { reason: "threshold" });
-		await enqueue(harness, "steer", "steer after compact");
-		await enqueue(harness, "followUp", "wait until run ends");
-		await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
-		assert.equal(harness.sent.length, 0);
-
-		await harness.emit(outcome, { reason: "threshold", aborted });
-		// No agent_settled event: the original run is still making tool calls.
-		await harness.emit("turn_start");
-		await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
-		assert.deepEqual(harness.sent, [{ content: "steer after compact", options: { deliverAs: "steer" } }]);
-		assert.match(renderWidget(harness), /wait until run ends/);
-	});
-}
-
-test("automatic compaction completion preserves native-input ordering but allows steering during that run", async () => {
-	const harness = createHarness();
-	await harness.emit("session_start");
-	harness.setIdle(true);
-	await harness.emit("session_before_compact", { reason: "threshold" });
-	harness.editor.onSubmit?.("ordinary native input");
-	harness.editor.onSubmit?.("/reload");
-	await enqueue(harness, "steer", "steer the native run");
-	await harness.emit("session_compact", { reason: "threshold" });
-	await new Promise((resolve) => setTimeout(resolve, 5));
-	assert.deepEqual(harness.submitted, ["ordinary native input"]);
-	assert.equal(harness.sent.length, 0);
-
-	harness.setIdle(false);
-	await harness.emit("turn_start");
-	await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
-	assert.equal(harness.sent[0]?.content, "steer the native run");
-	assert.deepEqual(harness.submitted, ["ordinary native input"]);
-	harness.setIdle(true);
-	await harness.emit("agent_settled");
-	await waitFor(() => harness.submitted.length === 2);
-	assert.deepEqual(harness.submitted, ["ordinary native input", "/reload"]);
-});
-
-test("automatic compaction completion does not release a paused or edited steering head", async () => {
-	for (const hold of ["pause", "edit"] as const) {
-		const harness = createHarness();
-		await harness.emit("session_start");
-		await harness.emit("session_before_compact", { reason: "threshold" });
-		await enqueue(harness, "steer", "held head");
-		harness.editor.handleInput(hold === "pause" ? "escape" : "alt-up");
-		await harness.emit("session_compact", { reason: "threshold" });
-		await harness.emit("turn_end", { message: { role: "assistant", stopReason: "toolUse" } });
-		assert.equal(harness.sent.length, 0);
-		assert.match(renderWidget(harness), hold === "pause" ? /paused/ : /held while editing/);
-	}
-});
-
-test("holds reload through automatic compaction until the agent settles", async () => {
+test("holds reload until automatic compaction completes", async () => {
 	const harness = createHarness();
 	await harness.emit("session_start");
 	harness.setIdle(true);
@@ -1095,7 +1017,7 @@ test("holds reload through automatic compaction until the agent settles", async 
 	harness.editor.onSubmit?.("/reload");
 	assert.equal(harness.submitted.length, 0);
 
-	await harness.emit("agent_settled");
+	await harness.emit("session_compact", { reason: "overflow" });
 	await waitFor(() => harness.submitted.length === 1);
 	assert.deepEqual(harness.submitted, ["/reload"]);
 });
@@ -1110,7 +1032,7 @@ test("captures a compaction command while slash autocomplete is visible", async 
 
 	assert.match(renderWidget(harness), /\/reload/);
 	assert.deepEqual(harness.submitted, []);
-	await harness.emit("agent_settled");
+	await harness.emit("session_compact", { reason: "threshold" });
 	await waitFor(() => harness.submitted.length === 1);
 	assert.deepEqual(harness.submitted, ["/reload"]);
 });
@@ -1123,6 +1045,7 @@ test("holds automatic-compaction commands through ordinary native input", async 
 	harness.editor.onSubmit?.("ordinary after automatic compaction");
 	harness.editor.onSubmit?.("/reload");
 
+	await harness.emit("session_compact", { reason: "threshold" });
 	await harness.emit("agent_settled");
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(harness.submitted, ["ordinary after automatic compaction"]);

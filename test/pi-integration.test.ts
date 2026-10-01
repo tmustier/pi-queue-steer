@@ -203,18 +203,14 @@ function gatedResponse(
 	step: () => Promise<ReturnType<typeof fauxAssistantMessage>>;
 	release(): void;
 } {
-	let releaseGate: (() => void) | undefined;
-	const gate = new Promise<void>((resolve) => {
-		releaseGate = resolve;
-	});
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
 	return {
 		step: async () => {
 			await gate;
 			return fauxAssistantMessage(content, options);
 		},
-		release() {
-			releaseGate?.();
-		},
+		release,
 	};
 }
 
@@ -384,62 +380,78 @@ test("Pi 0.87 finishes settled handlers before starting queue-steer's requested 
 	}
 });
 
-test("steering reaches the continuing tool run after real threshold compaction, before agent_end", async () => {
-	let enterResumed: (() => void) | undefined;
-	const resumedEntered = new Promise<void>((resolve) => { enterResumed = resolve; });
-	const resumed = gatedResponse(
-		[fauxToolCall("bash", { command: "printf resumed-tool", timeout: 5 })],
-		{ stopReason: "toolUse" },
-	);
-	const summaryExtension: ExtensionFactory = (pi) => {
-		pi.on("session_before_compact", (event) => ({
-			compaction: {
-				summary: "short integration summary",
-				firstKeptEntryId: event.preparation.firstKeptEntryId,
-				tokensBefore: event.preparation.tokensBefore,
+for (const outcome of ["success", "failure", "cancelled"] as const) {
+	test(`steering reaches the continuing tool run after threshold compaction ${outcome}`, async () => {
+		let enterResumed!: () => void;
+		const resumedEntered = new Promise<void>((resolve) => { enterResumed = resolve; });
+		const resumed = gatedResponse(
+			[fauxToolCall("bash", { command: "printf resumed-tool", timeout: 5 })],
+			{ stopReason: "toolUse" },
+		);
+		const summaryExtension: ExtensionFactory = (pi) => {
+			let first = true;
+			pi.on("session_before_compact", (event) => {
+				if (outcome === "cancelled") return { cancel: true };
+				if (outcome === "failure" && first) {
+					first = false;
+					return;
+				}
+				return {
+					compaction: {
+						summary: "short integration summary",
+						firstKeptEntryId: event.preparation.firstKeptEntryId,
+						tokensBefore: event.preparation.tokensBefore,
+					},
+				};
+			});
+		};
+		const harness = await createIntegrationHarness({
+			contextWindow: 100_000,
+			// agent-default (not a user rule): 2026-10-01, small test threshold.
+			reserveTokens: 99_000,
+			tools: ["bash"],
+			extraExtensions: [summaryExtension],
+		});
+		const trace: string[] = [];
+		harness.session.subscribe((event) => {
+			trace.push(event.type);
+		});
+		harness.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "printf initial-tool", timeout: 5 })], { stopReason: "toolUse" }),
+			...(outcome === "failure" ? [() => { throw new Error("threshold summary failed"); }] : []),
+			() => {
+				enterResumed();
+				return resumed.step();
 			},
-		}));
-	};
-	const harness = await createIntegrationHarness({
-		contextWindow: 100_000,
-		reserveTokens: 99_000,
-		tools: ["bash"],
-		extraExtensions: [summaryExtension],
+			() => {
+				assert.equal(userTexts(harness.session).at(-1), "steer after threshold");
+				assert.equal(trace.includes("agent_end"), false);
+				return fauxAssistantMessage("steering handled inside original run");
+			},
+		]);
+		const compactionEnded = nextCompactionEnd(harness.session);
+		const prompt = harness.session.prompt("initial context ".repeat(1_000));
+		try {
+			await within(resumedEntered, () => trace.join(", "));
+			const compaction = await within(compactionEnded, () => trace.join(", "));
+			assert.equal(compaction.reason, "threshold");
+			assert.equal(compaction.aborted, outcome === "cancelled");
+			if (outcome === "failure") assert.match(compaction.errorMessage ?? "", /threshold summary failed/);
+			assert.equal(!!compaction.result, outcome === "success");
+			assert.equal(trace.includes("agent_settled"), false);
+			await harness.session.prompt("steer after threshold", { streamingBehavior: "steer" });
+			resumed.release();
+			await within(prompt, () => trace.join(", "));
+			assert.equal(userTexts(harness.session).filter((text) => text === "steer after threshold").length, 1);
+			assert.equal(harness.session.getLastAssistantText(), "steering handled inside original run");
+			assert.equal(trace.filter((type) => type === "agent_start").length, 1);
+		} finally {
+			resumed.release();
+			await prompt.catch(() => undefined);
+			await harness.cleanup();
+		}
 	});
-	const trace: string[] = [];
-	harness.session.subscribe((event) => {
-		trace.push(event.type);
-	});
-	harness.faux.setResponses([
-		fauxAssistantMessage([fauxToolCall("bash", { command: "printf initial-tool", timeout: 5 })], { stopReason: "toolUse" }),
-		async () => {
-			enterResumed?.();
-			return resumed.step();
-		},
-		(context) => {
-			const steering = context.messages.filter((message) => message.role === "user").at(-1);
-			assert.ok(JSON.stringify(steering).includes("steer after threshold"));
-			assert.equal(trace.includes("agent_end"), false);
-			return fauxAssistantMessage("steering handled inside original run");
-		},
-	]);
-	const prompt = harness.session.prompt("initial context ".repeat(1_000));
-	try {
-		await within(resumedEntered, () => trace.join(", "));
-		assert.ok(trace.includes("compaction_end"));
-		assert.equal(trace.includes("agent_settled"), false);
-		await harness.session.prompt("steer after threshold", { streamingBehavior: "steer" });
-		resumed.release();
-		await within(prompt, () => trace.join(", "));
-		assert.equal(userTexts(harness.session).filter((text) => text === "steer after threshold").length, 1);
-		assert.equal(harness.session.getLastAssistantText(), "steering handled inside original run");
-		assert.equal(trace.filter((type) => type === "agent_start").length, 1);
-	} finally {
-		resumed.release();
-		await prompt.catch(() => undefined);
-		await harness.cleanup();
-	}
-});
+}
 
 test("real public prompt path triggers overflow compaction and preserves a queued follow-up", async () => {
 	const summaryExtension: ExtensionFactory = (pi) => {

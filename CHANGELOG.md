@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-01
+
+### Fixed
+
+- Deliver steering at the next turn after automatic compaction, even when the agent continues making tool calls.
+- Release compaction holds on success, failure and cancellation while preserving native post-compaction input ordering.
+
+### Changed
+
+- Replace native-input booleans with explicit pending and running states, and share one compaction completion path.
+- Inline single-use dispatch helpers and remove unreachable synchronous compaction recovery.
+- Test success, failure and cancellation through real Pi sessions and tools instead of fabricated lifecycle events.
+- Publish the package on npm as `@tmustier/pi-queue-steer`.
+
 ## 0.2.0 - 2026-08-09
 
 ### Added
