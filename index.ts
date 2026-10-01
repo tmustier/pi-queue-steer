@@ -582,9 +582,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		if (features.has(QUEUE_STEER_FEATURE)) return;
 
 		const factory = ((tui, theme, keybindings) => {
-			const editor = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings, {
-				embedWorkingStatus: true,
-			});
+			const editor = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
 			installSubmitGuard(editor, ctx);
 			const handleInput = editor.handleInput.bind(editor);
 			const renderEditor = editor.render.bind(editor);
@@ -606,10 +604,8 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 
 			const embedsWorkingStatus = "embedWorkingStatus" in editor && editor.embedWorkingStatus === true;
 			editor.render = (width: number): string[] => {
-				if (editSession && !renderingInline) {
-					return embedsWorkingStatus ? extractEmbeddedStatusBorder(renderEditor(width)) : [];
-				}
-				return renderEditor(width);
+				if (!editSession || renderingInline) return renderEditor(width);
+				return embedsWorkingStatus ? extractEmbeddedStatusBorder(renderEditor(width)) : [];
 			};
 
 			editor.handleInput = (data: string): void => {

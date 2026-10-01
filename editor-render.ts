@@ -128,16 +128,6 @@ function stripOuterFrameAndPadding(line: string, paddingX: number): string {
  * add side borders and padding. The queue already provides that frame, so an
  * active row should inherit only the live editor content and cursor.
  */
-/**
- * Keep an editor's top border only when it carries an embedded status such as
- * Pi's working spinner, so the status stays visible while a queued row is edited inline.
- */
-export function extractEmbeddedStatusBorder(lines: readonly string[]): string[] {
-	const top = lines[0] ?? "";
-	const label = stripAnsi(top).replace(/↑ \d+ more/, "").replace(/─/g, "").trim();
-	return label ? [top] : [];
-}
-
 export function extractInlineEditorLines(lines: readonly string[], paddingX = 0): string[] {
 	if (lines.length === 0) return [""];
 	if (!isEditorFrame(lines[0] ?? "")) return [...lines];
@@ -156,4 +146,10 @@ export function extractInlineEditorLines(lines: readonly string[], paddingX = 0)
 		.map((line) => stripOuterFrameAndPadding(line, Math.max(0, paddingX)));
 	const auxiliary = lines.slice(bottomFrameIndex + 1);
 	return [...editorBody, ...auxiliary].length > 0 ? [...editorBody, ...auxiliary] : [""];
+}
+
+/** Keep the editor's top border only while it carries an embedded status such as Pi's working spinner. */
+export function extractEmbeddedStatusBorder([top = ""]: readonly string[]): string[] {
+	const label = stripAnsi(top).replace(/↑ \d+ more/, "").replace(/─/g, "").trim();
+	return label ? [top] : [];
 }
